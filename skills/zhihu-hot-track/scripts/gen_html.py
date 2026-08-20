@@ -8,7 +8,7 @@
 
 用法: python gen_html.py --root <工作根目录> --date 2026-08-08 [--out <输出根文件>]
 """
-import argparse, html, json, os
+import argparse, html, json, os, re
 
 JUDGE_CLS = {"积极": "pos", "中立": "neu", "消极": "neg"}
 CSS = """
@@ -83,7 +83,7 @@ main.detail { max-width: 900px; margin: 22px auto; padding: 0 24px; }
 .a-likes { color: #b45309; font-weight: 700; font-size: 13px; font-variant-numeric: tabular-nums; }
 .judge { border-radius: 4px; padding: 0 9px; font-size: 12px; font-weight: 700; color: #fff; }
 .pos { background: var(--pos); } .neu { background: var(--neu); } .neg { background: var(--neg); }
-.a-stance { color: var(--muted); font-size: 13px; flex: 1; min-width: 200px; }
+.a-stance { color: var(--ink); font-size: 13px; flex: 1; min-width: 200px; font-weight: 600; }
 .a-body { padding: 2px 24px 16px; }
 table.analysis { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0 10px; }
 table.analysis td { border: 1px solid #eee9dd; padding: 7px 11px; vertical-align: top; }
@@ -185,12 +185,16 @@ def main():
     open(idx_path, "w", encoding="utf-8").write(idx_html)
 
     # ============ 详情页 ============
+    def md_bold(s):
+        """把分析文本中的 **加粗** 语法转成 <b> 标签(先转义 HTML 防注入)"""
+        return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html.escape(s or ""))
+
     def answer_html(s, rank):
         parts = []
         for i, a in enumerate(s["answers"], 1):
             A = an[str(rank)]["answers"][i - 1]
             j = A["judge"]
-            st = html.escape(A["stance"])
+            st = md_bold(A["stance"])
             parts.append(f"""<details class="a"><summary>
 <span class="a-no">回答 {i}</span><span class="a-author">{html.escape(a['author']) or '匿名'}</span>
 <span class="a-likes">👍 {a['likes']}</span>
@@ -198,9 +202,9 @@ def main():
 <span class="a-stance">{st}</span></summary>
 <div class="a-body"><table class="analysis">
 <tr><td class="k">立场</td><td>{st}</td></tr>
-<tr><td class="k">解决思路</td><td>{html.escape(A['approach'])}</td></tr>
-<tr><td class="k">判断逻辑</td><td>{html.escape(A['logic'])}</td></tr>
-<tr><td class="k">情绪倾向</td><td>{html.escape(A['emotion'])}</td></tr></table>
+<tr><td class="k">解决思路</td><td>{md_bold(A['approach'])}</td></tr>
+<tr><td class="k">判断逻辑</td><td>{md_bold(A['logic'])}</td></tr>
+<tr><td class="k">情绪倾向</td><td>{md_bold(A['emotion'])}</td></tr></table>
 <details class="a-text"><summary>查看原文全文（{len(a['text'])} 字）{('' if a.get('content_status') == 'full' else '· 接口摘要·全文需登录')}</summary>
 <div>{html.escape(a['text'])}</div></details></div></details>""")
         return "".join(parts)
@@ -238,7 +242,7 @@ def main():
 <div class="q-head"><span class="rank">#{rank}</span>
 <a class="q-title" href="{html.escape(s['url'])}" target="_blank">{html.escape(s['title'])}</a>
 <span class="badges"><span class="badge">最高赞 {top}</span><span class="badge">{len(s['answers'])} 回答</span></span></div>
-<div class="essence"><b>问题本质：</b>{html.escape(an[str(rank)]['essence'])}</div>
+<div class="essence"><b>问题本质：</b>{md_bold(an[str(rank)]['essence'])}</div>
 {answer_html(s, rank)}
 {ext_html(rank)}
 </div>

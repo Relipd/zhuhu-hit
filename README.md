@@ -21,12 +21,14 @@
 skills/zhihu-hot-track/
 ├── SKILL.md          # 完整流程规范：抓取/分析/校验/交付 + 约束 + 踩坑记录
 └── scripts/          # 全流程通用脚本（参数化）
-    ├── run.py        # 热榜 + 6 变体搜索 + 合并去重
+    ├── api_fetch.py  # 优化首选：API 直拉回答列表，每题选最高赞+最多评论 top2（2×20=40 条）
+    ├── top2_select.py# 已有前 10 数据时瘦身为每题 top2（无需重抓）
+    ├── run.py        # 旧方案：热榜 + 6 变体搜索 + 合并去重（后备）
     ├── fulltext.py   # 回答全文补全 + 截断检测（--cookie 解锁全文）
     ├── search_many.py# 热点拓展动态搜索（单条 queries.json 驱动，支持限流重试）
     ├── check.py      # 完整性/情绪值域校验
     ├── fill_excel.py # 填月度 Excel（情绪下拉、截断备注、热点拓展 sheet）
-    ├── gen_html.py   # 生成 HTML 展示页（分页式 + 热点拓展块）
+    ├── gen_html.py   # 生成 HTML 展示页（分页式 + 热点拓展块 + **加粗**高亮关键结论）
     └── topic_lib.py  # 话题库双轨维护：update 增量收录 / search 查重 / rebuild
 ```
 
@@ -43,9 +45,11 @@ skills/zhihu-hot-track/
 ROOT=<你的工作根目录>
 D=2026-08-08
 
-1. 抓取:   python scripts/run.py --root %ROOT% --date %D% --variants 6
+1. 抓取:   python scripts/api_fetch.py --root %ROOT% --date %D% --cookie raw/<D>/cookies.txt
+           # API 直拉，每题保留最高赞+最多评论共 2 条；旧方案 run.py 作后备
 2. 补全:   python scripts/fulltext.py --root %ROOT% --date %D% --cookie raw/<D>/cookies.txt
 3. 分析:   Agent 读 raw/<D>/answers_summary.json 逐条写四维分析 → raw/<D>/analysis.json
+           # 风格：少复述事实、多鲜明结论，关键结论用 **加粗**（HTML 自动高亮）
 4. 拓展:   Agent Swarm 并行处理前 10 rank（动态发散搜索）→ raw/<D>/extension.json
            python scripts/topic_lib.py update --root %ROOT% --date %D%   # 纳入话题库
 5. 校验:   python scripts/check.py --root %ROOT% --date %D%

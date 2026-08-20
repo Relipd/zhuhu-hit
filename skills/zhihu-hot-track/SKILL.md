@@ -20,13 +20,20 @@ description: 仅在用户键入 /zhihu-hot-track 斜杠命令(知乎热榜每日
 
 ### 1.1 依赖与凭证检测(先验证,再动手;缺啥补啥,不缺不问)
 
-- **Python**:一律用 `D:\claude code\python\python.exe`(3.12.8,含 openpyxl)。裸 `python` 是 WindowsApps 假别名(exit 49/9009),不可用。
-- **知乎 CLI**:`%LOCALAPPDATA%\ZhihuCLI\current\zhihu-cli.exe`;环境变量 `ZHIHU_CLI` 优先。
+**路径泛化原则(2026-08-20 起)**:所有依赖路径一律按下方**探测顺序**定位,不再硬编码单一绝对路径。探测命中即用,全部失败才回退方式 B 或询问用户。
+
+- **Python(环境探测,先按序探测再回退)**:
+  1. 环境变量 `ZHIHU_PYTHON`(若设置);
+  2. 本机 venv:`<venv>\Scripts\python.exe`(按本机环境填写,实测 3.14.3,含 openpyxl 3.1.5);
+  3. 用户级安装:`<python 安装目录>\python.exe`(若存在);
+  4. 其他:任何 `python.exe` 且 `python -c "import openpyxl"` 通过。
+  裸 `python` 是 WindowsApps 假别名(exit 49/9009),不可用;最终选定路径后跑 `python --version` 与 `import openpyxl` 双确认。
+- **知乎 CLI**:`%LOCALAPPDATA%\ZhihuCLI\current\zhihu-cli.exe`(zhihu-cli skill setup 安装到此,实测 0.3.0 已就位);环境变量 `ZHIHU_CLI` 优先。调用一律用绝对 `binary_path`,不依赖 PATH(见 zhihu skill)。
 - **凭证定向(信息最小——只认这两样,各有各的出处,互不替代)**:
-  - **开放平台 Access Secret(CLI 抓取用)**:出处 = 知乎开放平台控制台(open.zhihu.com → 登录 → 开放平台 → 应用管理,应用凭证含 Client ID 与 Access Secret)。仅当 `zhihu-cli auth list` 为空或调用报 AUTH_INVALID 时才向用户索取,且**只索取 Access Secret 一项**,不涉及 API key、权限位申请等任何多余字段。注入一律用坑 1 的无换行方式(`cmd /c "echo|set /p=<secret>|<cli> auth set --secret-stdin"`);AUTH_INVALID 基本都因换行,而非 Secret 本身无效。此凭证**不适用于网页登录**(坑 12)。
+  - **开放平台 Access Secret(CLI 抓取用)**:出处 = 知乎开放平台控制台(open.zhihu.com → 登录 → 开放平台 → 应用管理,应用凭证含 Client ID 与 Access Secret)。仅当 `zhihu-cli auth status` 为空或调用报 AUTH_INVALID 时才向用户索取,且**只索取 Access Secret 一项**,不涉及 API key、权限位申请等任何多余字段。注入一律用坑 1 的无换行方式(`cmd /c "echo|set /p=<secret>|<cli> auth set --secret-stdin"`);AUTH_INVALID 基本都因换行,而非 Secret 本身无效。此凭证**不适用于网页登录**(坑 12)。配置成功以 `auth status --verify` 返回 `verification=valid` 为准。
   - **网页登录 Cookie(全文解锁用)**:出处 = Step 1.2 方式 A(playwright + Edge 弹窗扫码,自动提取)或兜底方式 B。此凭证**不适用于 CLI 抓取**;与 Access Secret 两套并存、互不替代,检测时分别验证,缺哪个补哪个,齐了就不再多问。
-- **脚本**:skill 的 `scripts/` 目录齐全(run.py / fulltext.py / search_many.py / check.py / fill_excel.py / gen_html.py)。
-- **playwright-cli(必要,主要手段)**:仓库在 `D:\claude code\playwright-cli`,调用方式 `Set-Location D:\claude code\playwright-cli; node playwright-cli.js <命令>`;skill 文档已装于 `.claude\skills\playwright-cli`。**Cookie 获取的唯一主手段**(Step 1.2 方式 A),仅当它不可用时才回退方式 B(F12 手动)。`open` 一律 `--browser=msedge`——Edge 是唯一验证可用的通道(本机 Chrome 通道 spawn 被 EACCES 拦截,疑似杀软,不要尝试 Chrome)。先 `cd` 到仓库目录再执行,命令生成的快照会写到仓库 `.playwright-cli/`。
+- **脚本**:skill 的 `scripts/` 目录齐全(run.py / **api_fetch.py(优化首选)** / fulltext.py / search_many.py / check.py / fill_excel.py / gen_html.py)。
+- **playwright-cli(必要,主要手段,路径探测)**:按序探测环境变量 `PLAYWRIGHT_CLI` → `<本机安装目录>\playwright-cli.js`;命中后调用方式 `Set-Location <仓库目录>; node playwright-cli.js <命令>`;skill 文档装于 `.claude\skills\playwright-cli`。**Cookie 获取的唯一主手段**(Step 1.2 方式 A),仅当它不可用时才回退方式 B(F12 手动)。`open` 一律 `--browser=msedge`——Edge 是唯一验证可用的通道(Chrome 通道 spawn 被 EACCES 拦截,疑似杀软,不要尝试 Chrome)。先 `cd` 到仓库目录再执行,命令生成的快照会写到仓库 `.playwright-cli/`。
 
 ### 1.2 网页登录 Cookie(自检优先,不重复询问)
 
@@ -39,7 +46,7 @@ description: 仅在用户键入 /zhihu-hot-track 斜杠命令(知乎热榜每日
 2. 存在但非当天 → 写 5 行临时验证脚本带 Cookie 请求 `api/v4/answers/{id}?include=content`(取任一本日回答 id),`content_need_truncated` 不为 true 即有效 → 复用(验证脚本用完即删);失效则删旧 cookies.txt,进入第 3 步。
 3. 文件不存在或已失效 → **这时才向用户索取**,二选一:
    - **方式 A(主手段,playwright-cli + Edge)**:弹 Edge 窗口让用户登录,自动提取 Cookie,零誊写:
-     1. `Set-Location D:\claude code\playwright-cli; node playwright-cli.js open "https://www.zhihu.com" --browser=msedge --headed --persistent`(弹出 Edge 窗口;profile 已有登录态则直接是已登录页面,无则停在登录页)
+     1. `Set-Location <playwright-cli 仓库目录(按 1.1 探测)>; node playwright-cli.js open "https://www.zhihu.com" --browser=msedge --headed --persistent`(弹出 Edge 窗口;profile 已有登录态则直接是已登录页面,无则停在登录页)
      2. **预检**:`node playwright-cli.js --raw cookie-list --domain=zhihu.com`
         - 输出含 `z_c0` → 已登录,跳到第 4 步提取
         - 不含 `z_c0` → 未登录,进入第 3 步
@@ -54,9 +61,14 @@ Cookie 是**敏感凭证**:本次流程全部步骤完成后删除(Step 2.8 收�
 
 | 信息 | 默认值 | 说明 |
 |---|---|---|
-| 工作根目录 ROOT | `D:\claude code\知乎动态跟进` | 任意目录均可,所有脚本 `--root` 参数化 |
+| 工作根目录 ROOT | 见下方「ROOT 解析」 | 所有脚本 `--root` 参数化 |
 | 抓取日期 D | 今天(YYYY-MM-DD) | 斜杠参数可指定过去日期补抓 |
 | 抓取范围 | 热榜前 20,每问题最多 10 条回答 | 热点拓展仅前 10(硬约束) |
+
+**ROOT 解析(2026-08-20 起,优先项目级,其次 D 盘)**:
+1. **项目级优先**:若当前会话工作区有 `.claude/` 或类似项目目录,且其下有(或已约定)数据子目录,用 `<工作区>/知乎动态跟进`;若已在某项目内运行过本 skill(存在 `<项目>/raw/`),直接沿用该项目级 ROOT;
+2. **D 盘回退**:无项目级约定时,默认 `D:\知乎动态跟进`(可按本机习惯调整);
+3. 也可在斜杠参数或会话中显式指定任意 ROOT,脚本全部参数化支持。
 
 ### 1.4 需求命令跟进
 
@@ -82,13 +94,19 @@ Excel 列(16 列):层级 / 问题序号 / 排名 / 问题标题 / 原问题URL /
 ### 主流程(脚本全部在 skill 的 scripts/ 目录,参数化,可复用)
 
 ```text
-ROOT=D:\claude code\知乎动态跟进          # 工作根目录(任意目录均可)
+ROOT=<按 1.3 ROOT 解析:项目级优先,否则 D:\知乎动态跟进>
 D=2026-08-09                              # 抓取日期
 
-1. 抓取:   python scripts/run.py --root %ROOT% --date %D% [--limit 20] [--variants 6]
+1. 抓取(优化首选):  python scripts/api_fetch.py --root %ROOT% --date %D% --cookie raw/<D>/cookies.txt
+            (热榜 URL → question ID → 带 Cookie 直连 api/v4/questions/{id}/answers 拉回答;
+             每问题 2 次调用(翻页拉20条候选),20题约40秒,选 top2=最高赞+最多评论(去重补足),
+             共 2×20=40 条完整全文,0截断。无 Cookie 时省略 --cookie,尽力直连)
+   旧方案(仅作后备): python scripts/run.py --root %ROOT% --date %D% [--limit 20] [--variants 6]
             → raw/<D>/hot.json + search_<n>_v<k>.json + answers_summary.json
+   已有前10数据瘦身: python scripts/top2_select.py --root %ROOT% --date %D% [--backup]
+            (从已抓全量 answers_summary.json 挑每问题最高赞+最多评论,无需重抓)
 2. 补全:   python scripts/fulltext.py --root %ROOT% --date %D% --cookie raw/<D>/cookies.txt
-            (带 Cookie 解锁全文 + 截断检测,约束一;无 Cookie 时省略 --cookie,截断回答如实标注)
+            (api_fetch 已带 Cookie 时通常无需此步;截断检测约束一)
 3. 分析:   Agent 亲自读 answers_summary.json, 逐条写四维分析 → analysis.json
             (按 URL 对应!情绪判断必须自行阅读判断, 见约束二/三)
 4. 拓展:   **Agent Swarm 并行**: rank 1-10 各派 subagent 独立执行"读回答→发散搜索→产出发散点",
@@ -104,7 +122,17 @@ D=2026-08-09                              # 抓取日期
 
 抓取可 --resume 断点续跑;--variants 2-6 控制查询变体数(建议 6)。
 CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\current\zhihu-cli.exe。
+Python 路径:按 1.1 探测(环境变量 ZHIHU_PYTHON → 本机 venv → 用户级安装)。
 ```
+
+**优化方案说明(2026-08-20 起)**:抓取首选 `api_fetch.py`(API 直拉回答列表),替代 run.py 的 120 次搜索变体。
+- 原理:热榜 URL 已含 question ID,带网页 Cookie 直连 `api/v4/questions/{id}/answers?include=content` 直接拿回答列表。
+- **top2 经济性(2026-08-20 二次优化)**:每问题拉 2 页 20 条候选,选「最高赞 + 最多评论」各 1 条(去重,同一则补第二),共 2×20=40 条。
+  分析成本从 200 条降到 40 条(约 2.7 万字,平均 674 字/条),仍保每题代表声:高赞=主流情绪,高评论=争议焦点。
+- 实测:20 题 40 秒,40 条完整全文(0 截断),最高赞/最多评论回答齐全;旧方案 8 分钟仅 ~88 条摘要。
+- 前置:必须带网页 Cookie(Step 1.2 方式 A 从 Edge 持久 profile 提取,z_c0 登录态);无 Cookie 直连 api/v4 返回 403(坑 11)。
+- 产出 answers_summary.json 与 run.py 完全同格式(兼容 check/fill_excel/gen_html)。
+- 注意:只抓前 10 条时选出的「最多评论」不一定是全题真·最多(可能在前 10 之外),务必拉 2 页候选再选。
 
 ### 查询变体规则(重要)
 
@@ -119,6 +147,10 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 - **原文保留**:回答内容列必须完整摘取原文,不删改。
 - **四维分析基于原文**:立场/解决思路/判断逻辑/情绪倾向逐条归纳,不编造;拿不到信息的回答如实标注。
 - **情绪判断**:三选一 积极/中立/消极,与情绪倾向描述一致。
+- **分析风格(2026-08-20 定)**:少复述事实、多鲜明结论;观点一定要鲜明,敢于有自己的分析判断,不做温吞水的中性综述。
+  - 每条 1-2 句核心结论,直指要害(如「本质是 X」),允许带作者个人判断。
+  - **关键结论用 `**加粗**` 包裹**(gen_html.py 的 md_bold 自动转 <b>,HTML 中高亮显示)。
+  - 情绪倾向/判断同样大胆定性,不回避批评或讽刺。
 - **原始链接**:所有问题/回答保留原 URL(Excel 中为超链接)。
 - **月度扩展**:新日期直接插入新 sheet 到最前;raw 数据按日期归档,随时可回溯。
 - 问题本质列 = 对该问题的主题内容提炼(一句话),回答行该列留空。
@@ -265,12 +297,14 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 
 | 脚本 | 职责 | 关键参数 |
 |---|---|---|
-| `run.py` | 热榜 + 变体搜索 + 合并去重(数据抓取全流程) | `--root --date --limit --variants --resume` |
+| `api_fetch.py` | **优化首选**:热榜 URL→qid→带 Cookie 直连 api/v4/questions/{id}/answers 拉 2 页候选,选 top2=最高赞+最多评论(去重补足,2×20=40 条,全文0截断,与 run.py 同格式输出) | `--root --date --limit --cookie --delay` |
+| `top2_select.py` | 从已抓全量 answers_summary.json 瘦身为每题 top2(已有前10数据无需重抓时用;`--backup` 备份原文件) | `--root --date --backup` |
+| `run.py` | 热榜 + 变体搜索 + 合并去重(旧方案,api_fetch 不可用时的后备) | `--root --date --limit --variants --resume` |
 | `fulltext.py` | 回答全文补全 + 截断检测(content_status 标注;`--cookie` 解锁全文) | `--root --date --delay --force --cookie` |
 | `search_many.py` | 批量发散搜索(热点拓展用,queries.json 驱动) | `queries.json outdir --db --delay --count` |
 | `check.py` | 完整性校验(分析齐全/情绪值域/URL/内容/状态) | `--root --date` |
 | `fill_excel.py` | 填月度 Excel(自动建模板、情绪列下拉、截断备注、热点拓展 sheet) | `--root --date --xlsx` |
-| `gen_html.py` | 生成 HTML 展示页(原文状态标签、热点拓展块) | `--root --date --out` |
+| `gen_html.py` | 生成 HTML 展示页(原文状态标签、热点拓展块、`**加粗**`→`<b>` 高亮关键结论) | `--root --date --out` |
 | `topic_lib.py` | 话题库双轨维护:update 增量收录(extension→index.json,url 去重)+ search 查重(url/关键词/分类)+ rebuild | `update --root --date` / `search --root --url\|--keyword\|--cat` / `rebuild --root` |
 
 所有脚本路径全参数化(`--root` 默认当前目录),不写死任何绝对路径;日期目录 `raw/<D>/` 自动创建。分析步骤(analysis.json)由 Agent 完成,脚本负责抓取/校验/产出。
