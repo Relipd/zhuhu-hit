@@ -7,6 +7,7 @@
   python topic_lib.py search --root <ROOT> --keyword <词>       # 内容/分类关键词命中
   python topic_lib.py search --root <ROOT> --cat <分类>         # 列出某分类全部条目
   python topic_lib.py rebuild --root <ROOT>                     # 从 index.json 重建 md(修复用)
+  python topic_lib.py prune --root <ROOT> --date YYYY-MM-DD     # 移除该日期中已不在当日 extension.json 的条目
 """
 import argparse
 import io
@@ -131,6 +132,40 @@ def cmd_search(root, url=None, keyword=None, cat=None):
     return 0
 
 
+def cmd_prune(root, date):
+    """移除 index.json 中 date=<date>、且 url 已不在当日 extension.json 里的条目。
+
+    场景: subagent 按「同类型 ≤3」收敛删减条目(把超出条目要点并入 thinking)后,
+    话题库只增不减会与 extension.json 不一致。本命令只影响指定 date 的条目,
+    其他日期一动不动; 重建 md 由本命令自动完成。
+    """
+    lib = os.path.join(root, "话题库")
+    ip, mp = os.path.join(lib, "index.json"), os.path.join(lib, "话题库.md")
+    items = load_index(ip)
+    ext_path = os.path.join(root, "raw", date, "extension.json")
+    if not os.path.exists(ext_path):
+        print("未找到", ext_path, "-- 无法确定保留集合, 已中止(不改动 index.json)")
+        return 1
+    with io.open(ext_path, "r", encoding="utf-8-sig") as f:
+        ext = json.load(f)
+    keep = set()
+    for key in ext:
+        for it in ext[key]["items"]:
+            keep.add(norm_url(it["url"]))
+    before = len(items)
+    removed = [it for it in items if it["date"] == date and norm_url(it["url"]) not in keep]
+    items = [it for it in items if not (it["date"] == date and norm_url(it["url"]) not in keep)]
+    save_index(ip, items)
+    with io.open(mp, "w", encoding="utf-8") as f:
+        f.write(rebuild_md(items))
+    print("prune {d}: 移除 {n} 条 | index.json {a} -> {b} 条 | md 已重建".format(
+        d=date, n=len(removed), a=before, b=len(items)))
+    for it in removed[:20]:
+        print("  - [rank {r}] ({t}) {c} | {u}".format(
+            r=it["rank"], t=it["type"], c=it["content"][:50], u=it["url"]))
+    return 0
+
+
 def cmd_rebuild(root):
     lib = os.path.join(root, "话题库")
     items = load_index(os.path.join(lib, "index.json"))
@@ -152,6 +187,9 @@ def main():
     s.add_argument("--cat")
     r = sub.add_parser("rebuild")
     r.add_argument("--root", required=True)
+    p = sub.add_parser("prune")
+    p.add_argument("--root", required=True)
+    p.add_argument("--date", required=True)
     a = ap.parse_args()
     if a.cmd == "update":
         cmd_update(a.root, a.date)
@@ -159,6 +197,8 @@ def main():
         return cmd_search(a.root, a.url, a.keyword, a.cat)
     elif a.cmd == "rebuild":
         cmd_rebuild(a.root)
+    elif a.cmd == "prune":
+        return cmd_prune(a.root, a.date)
     else:
         ap.print_help()
     return 0

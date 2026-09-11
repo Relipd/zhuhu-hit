@@ -8,7 +8,7 @@
 
 用法: python gen_html.py --root <工作根目录> --date 2026-08-08 [--out <输出根文件>]
 """
-import argparse, html, json, os, re
+import argparse, html, json, os
 
 JUDGE_CLS = {"积极": "pos", "中立": "neu", "消极": "neg"}
 CSS = """
@@ -83,7 +83,7 @@ main.detail { max-width: 900px; margin: 22px auto; padding: 0 24px; }
 .a-likes { color: #b45309; font-weight: 700; font-size: 13px; font-variant-numeric: tabular-nums; }
 .judge { border-radius: 4px; padding: 0 9px; font-size: 12px; font-weight: 700; color: #fff; }
 .pos { background: var(--pos); } .neu { background: var(--neu); } .neg { background: var(--neg); }
-.a-stance { color: var(--ink); font-size: 13px; flex: 1; min-width: 200px; font-weight: 600; }
+.a-stance { color: var(--muted); font-size: 13px; flex: 1; min-width: 200px; }
 .a-body { padding: 2px 24px 16px; }
 table.analysis { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0 10px; }
 table.analysis td { border: 1px solid #eee9dd; padding: 7px 11px; vertical-align: top; }
@@ -164,17 +164,19 @@ def main():
         for i, _ in enumerate(s["answers"]):
             jc_q[an[str(rank)]["answers"][i]["judge"]] += 1
         is_ext = rank <= 10 and str(rank) in ext
+        # 覆盖度: 让读者知道"抓到的 5 条"是该问题的多少(见 SKILL.md 热点拓展/数据源说明)
+        cov_html = f"<span>覆盖 {m}/{s['total_answers']}</span>" if s.get("total_answers") else ""
         cards.append(f"""<a class="card-link" href="q{rank:02d}.html">
 <div class="card-top"><span class="rank">#{rank}</span>{'<span class="ext-tag">扩展</span>' if is_ext else ''}</div>
 <div class="card-title">{html.escape(s['title'])}</div>
-<div class="card-meta"><span>最高赞 <b>{top}</b></span><span>{m} 回答</span></div>
+<div class="card-meta"><span>最高赞 <b>{top}</b></span><span>{m} 回答</span>{cov_html}</div>
 {mbar_html(jc_q, m)}</a>""")
 
     idx_html = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>知乎热榜跟进 {args.date} · 索引</title><style>{CSS}</style></head><body>
 <header><h1>知乎热榜跟进 · {args.date}</h1>
-<p>数据来源：知乎开放平台 · 热榜前 {n} · 每问题多查询合并去重取前 10 回答 · 点击卡片进入详情页 · 前 10 含热点拓展</p>
+<p>数据来源：知乎开放平台热榜 · 每问题数据 =「问题维度网页接口(按赞取前 N)」∪「关键词搜索召回」并集 · 点击卡片进入详情页 · 前 10 含热点拓展</p>
 <div class="stats"><span><b>{n}</b>问题</span><span><b>{total}</b>回答</span>
 <span><b>{jc['积极']}</b>积极</span><span><b>{jc['中立']}</b>中立</span><span><b>{jc['消极']}</b>消极</span>
 <span class="ebar"><i style="width:{jc['积极'] * 100 // max(total,1)}%;background:var(--pos)"></i>
@@ -185,16 +187,12 @@ def main():
     open(idx_path, "w", encoding="utf-8").write(idx_html)
 
     # ============ 详情页 ============
-    def md_bold(s):
-        """把分析文本中的 **加粗** 语法转成 <b> 标签(先转义 HTML 防注入)"""
-        return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html.escape(s or ""))
-
     def answer_html(s, rank):
         parts = []
         for i, a in enumerate(s["answers"], 1):
             A = an[str(rank)]["answers"][i - 1]
             j = A["judge"]
-            st = md_bold(A["stance"])
+            st = html.escape(A["stance"])
             parts.append(f"""<details class="a"><summary>
 <span class="a-no">回答 {i}</span><span class="a-author">{html.escape(a['author']) or '匿名'}</span>
 <span class="a-likes">👍 {a['likes']}</span>
@@ -202,9 +200,9 @@ def main():
 <span class="a-stance">{st}</span></summary>
 <div class="a-body"><table class="analysis">
 <tr><td class="k">立场</td><td>{st}</td></tr>
-<tr><td class="k">解决思路</td><td>{md_bold(A['approach'])}</td></tr>
-<tr><td class="k">判断逻辑</td><td>{md_bold(A['logic'])}</td></tr>
-<tr><td class="k">情绪倾向</td><td>{md_bold(A['emotion'])}</td></tr></table>
+<tr><td class="k">解决思路</td><td>{html.escape(A['approach'])}</td></tr>
+<tr><td class="k">判断逻辑</td><td>{html.escape(A['logic'])}</td></tr>
+<tr><td class="k">情绪倾向</td><td>{html.escape(A['emotion'])}</td></tr></table>
 <details class="a-text"><summary>查看原文全文（{len(a['text'])} 字）{('' if a.get('content_status') == 'full' else '· 接口摘要·全文需登录')}</summary>
 <div>{html.escape(a['text'])}</div></details></div></details>""")
         return "".join(parts)
@@ -229,6 +227,8 @@ def main():
         rank = s["rank"]
         prev, nxt = f"q{rank - 1:02d}.html" if rank > 1 else None, f"q{rank + 1:02d}.html" if rank < n else None
         top = s["answers"][0]["likes"] if s["answers"] else "-"
+        cov_badge = (f'<span class="badge">覆盖 {len(s["answers"])}/{s["total_answers"]}</span>'
+                     if s.get("total_answers") else "")
         pager = f"""<div class="pager">
 <a class="{'off' if not prev else ''}" href="{prev or '#'}">← 上一题</a>
 <a href="index.html">返回索引</a>
@@ -241,8 +241,8 @@ def main():
 <div class="q">
 <div class="q-head"><span class="rank">#{rank}</span>
 <a class="q-title" href="{html.escape(s['url'])}" target="_blank">{html.escape(s['title'])}</a>
-<span class="badges"><span class="badge">最高赞 {top}</span><span class="badge">{len(s['answers'])} 回答</span></span></div>
-<div class="essence"><b>问题本质：</b>{md_bold(an[str(rank)]['essence'])}</div>
+<span class="badges"><span class="badge">最高赞 {top}</span><span class="badge">{len(s['answers'])} 回答</span>{cov_badge}</span></div>
+<div class="essence"><b>问题本质：</b>{html.escape(an[str(rank)]['essence'])}</div>
 {answer_html(s, rank)}
 {ext_html(rank)}
 </div>

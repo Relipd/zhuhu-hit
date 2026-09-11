@@ -5,16 +5,18 @@
 queries.json 格式: [{"rank": 1, "query": "...", "note": "发散维度"}, ...]
 输出: <输出目录>/rank_<n>_<idx>.json + queries 元信息写回
 """
-import argparse, json, os, subprocess, sys, time
+import argparse, json, os, re, subprocess, sys, time
+
+# 基础技术栈(zhihu skill)适配层与本脚本同目录, 见 zhihu_env.py 的模块说明
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import zhihu_env  # noqa: E402
 
 def cli_path():
-    env = os.environ.get("ZHIHU_CLI")
-    if env and os.path.exists(env):
-        return env
-    local = os.path.join(os.environ.get("LOCALAPPDATA", ""), "ZhihuCLI", "current", "zhihu-cli.exe")
-    if os.path.exists(local):
-        return local
-    sys.exit("未找到 zhihu-cli")
+    """CLI 位置统一由适配层解析(与 run.py / fulltext.py 同一套规则)。"""
+    try:
+        return zhihu_env.require_cli()
+    except RuntimeError as e:
+        sys.exit(str(e))
 
 def main():
     ap = argparse.ArgumentParser()
@@ -28,10 +30,24 @@ def main():
     cli = cli_path()
     os.makedirs(args.outdir, exist_ok=True)
     queries = json.load(open(args.queries, encoding="utf-8"))
+    # 输出编号 = 目录中已有同 rank 的最大编号继续递增, 避免多轮同名静默覆盖。
+    # (2026-09-12 实测: 每轮只写 1 条时旧逻辑使文件名恒为 rank_0N_1.json,
+    #  第二轮起把上一轮的检索依据覆盖掉, 事后无法溯源)
+    def next_index(outdir, rank):
+        pat = re.compile(rf"^rank_{rank:02d}_(\d+)\.json$")
+        mx = 0
+        for fn in os.listdir(outdir):
+            m = pat.match(fn)
+            if m:
+                mx = max(mx, int(m.group(1)))
+        return mx + 1
+
     idx = {}
     for q in queries:
         rank = q["rank"]
-        idx[rank] = idx.get(rank, 0) + 1
+        if rank not in idx:
+            idx[rank] = next_index(args.outdir, rank) - 1
+        idx[rank] += 1
         out = os.path.join(args.outdir, f"rank_{rank:02d}_{idx[rank]}.json")
         cmd = [cli, "search", args.db, "--query", q["query"], "--count", str(args.count)]
         if args.db == "global":

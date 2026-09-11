@@ -14,14 +14,17 @@
 """
 import argparse, json, os, re, subprocess, sys, time
 
+# 基础技术栈(zhihu skill)适配层与本脚本同目录, 见 zhihu_env.py 的模块说明
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import zhihu_env  # noqa: E402
+
 def cli_path():
-    env = os.environ.get("ZHIHU_CLI")
-    if env and os.path.exists(env):
-        return env
-    local = os.path.join(os.environ.get("LOCALAPPDATA", ""), "ZhihuCLI", "current", "zhihu-cli.exe")
-    if os.path.exists(local):
-        return local
-    sys.exit("未找到 zhihu-cli, 设置环境变量 ZHIHU_CLI 或先安装(见 zhihu skill)")
+    """CLI 位置统一由适配层解析: ZHIHU_CLI -> ZHIHU_CLI_HOME -> 平台默认
+    -> 兜底询问 zhihu skill 的 status(权威 binary_path)。不可用时给出修复指引。"""
+    try:
+        return zhihu_env.require_cli()
+    except RuntimeError as e:
+        sys.exit(str(e))
 
 def variants(title, n):
     segs = [s for s in re.split(r"[，,。；;：]", title) if s.strip()]

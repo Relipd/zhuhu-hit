@@ -95,9 +95,16 @@ def main():
     for s in summary:
         rank, q = s["rank"], an[str(s["rank"])]
         top = s["answers"][0]["likes"] if s["answers"] else None
+        # 覆盖度标注(约束: 不得让读者以为"抓到几条 = 该问题只有几条")
+        cov = ""
+        if s.get("total_answers"):
+            cov = " | 覆盖 {}/{} ({:.1f}%)".format(
+                len(s["answers"]), s["total_answers"],
+                len(s["answers"]) / s["total_answers"] * 100)
+        note_q = ("问题点赞数=该问题最高赞回答" if top is not None else "") + cov
         ws.append(["问题", rank, rank, s["title"], s["url"], top, q["essence"],
                    None, None, None, None, None, None, None, None,
-                   "问题点赞数=该问题最高赞回答" if top is not None else None])
+                   note_q or None])
         style_row(ws, True)
         ws.cell(row=ws.max_row, column=5).hyperlink = s["url"]
         for i, a in enumerate(s["answers"], 1):
