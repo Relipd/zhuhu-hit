@@ -109,15 +109,54 @@ def check_item(it, n, where, old):
             "relation": rel, "claim": ""}
 
 
+def strip_label(text, labels=("落点", "想法", "结论")):
+    """剥掉字段开头被照抄的标签前缀(『落点：』『想法：』…)。
+
+    实测 2026-09-12(rank 21 单问题追加): subagent 把 schema 示例里的「落点：」当内容写进
+    takeaway, 而 HTML 渲染时又加一次「落点：」→ 交付物出现「落点：落点：…」;
+    note 也被写成「标「边界」：…」这种把 relation 说明当正文的形式。入库统一剥离, 只留正文。
+    """
+    t = (text or "").strip()
+    for label in labels:
+        m = re.match(r"^%s(?:\s*\d+)?\s*[：:]\s*" % re.escape(label), t)
+        if m:
+            return t[m.end():].strip()
+    return t
+
+
+def strip_note_label(note):
+    """note 开头若是把 relation 说明当正文(「标「边界」：…」「标「印证」并给出机制锚点：…」), 剥掉前缀。
+
+    实测 2026-09-12(rank 21): 7 条 note 被写成 schema 自述。模式要允许 relation 与冒号之间夹字,
+    例如「标「印证」并给出机制锚点：」——第一版只匹配紧邻冒号, 漏掉了这一条。
+    """
+    t = (note or "").strip()
+    m = re.match(r"^[（(]?\s*标\s*[「『\"']?(印证|反驳|边界)[」』\"']?[^：:]{0,24}[：:]\s*", t)
+    if m:
+        rest = t[m.end():].strip().rstrip("）)").strip()
+        return rest or t
+    m2 = re.match(r"^[（(]?\s*标\s*[「『\"']?(印证|反驳|边界)[」』\"']?\s*", t)
+    if m2:
+        rest = t[m2.end():].strip()
+        return rest or t
+    return t
+
+
 def normalize_chains(chains, n, warnings, errors):
     """校验链式结构: 每条链 = 想法 + 证据[≥1] + 落点, 证据逐条带 relation。"""
     norm = []
+    n_note_fixed = []
     for ci, ch in enumerate(chains, 1):
         if not isinstance(ch, dict):
             errors.append(f"rank_{n}: chains[{ci}] 不是对象")
             continue
-        claim = str(ch.get("claim") or "").strip()
-        takeaway = str(ch.get("takeaway") or "").strip()
+        claim = strip_label(str(ch.get("claim") or ""), ("想法", "回答区判断", "判断"))
+        takeaway = strip_label(str(ch.get("takeaway") or ""), ("落点", "结论", "说明"))
+        if str(ch.get("claim") or "").strip() != claim:
+            warnings.append(f"rank_{n}: chains[{ci}].claim 开头带了「想法：」类前缀, 已剥离")
+        if str(ch.get("takeaway") or "").strip() != takeaway:
+            warnings.append(f"rank_{n}: chains[{ci}].takeaway 开头带了「落点：」类前缀, 已剥离"
+                            f"(否则交付物会显示成「落点：落点：」)")
         ev = ch.get("evidence")
         if not claim:
             errors.append(f"rank_{n}: chains[{ci}] 缺 claim(想法)")
@@ -145,10 +184,17 @@ def normalize_chains(chains, n, warnings, errors):
                 v["relation"] = contract.EXT_RELATION_DEFAULT
                 warnings.append(f"rank_{n}: chains[{ci}].evidence[{i}] 未标 relation, 默认「{v['relation']}」")
             v["claim"] = claim
+            if strip_note_label(v["note"]) != v["note"]:
+                v["note"] = strip_note_label(v["note"])
+                n_note_fixed.append(f"rank_{n} chains[{ci}].evidence[{i}]")
             if norm_src:
                 v["claim_source_url"] = norm_src["url"]      # 透传给展平后的证据, 供话题库入库
             evs.append(v)
         norm.append({"claim": claim, "takeaway": takeaway, "evidence": evs, "source": norm_src})
+    if n_note_fixed:
+        warnings.append("note 开头写成了 schema 自述(「标XX：」), 已剥离前缀: "
+                        + ", ".join(n_note_fixed[:5])
+                        + (" 等 %d 处" % len(n_note_fixed) if len(n_note_fixed) > 5 else ""))
     return norm
 
 
@@ -176,7 +222,7 @@ def normalize_dropped(dropped, n, warnings, errors):
         if not it.get("reason"):
             warnings.append(f"rank_{n}: dropped[{i}] 缺 reason(说明为何归为同类而不单列)")
         out.append({"type": it["type"], "content": str(it["content"]),
-                    "url": str(it["url"]), "note": str(it.get("note") or ""),
+                    "url": str(it["url"]), "note": strip_note_label(str(it.get("note") or "")),
                     "reason": str(it.get("reason") or "")})
     return out
 
