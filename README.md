@@ -62,19 +62,22 @@ python scripts/verify_html.py   --root "$ROOT" --date "$D"
 skills/zhihu-hot-track/
 ├── SKILL.md            # 流程规范:步骤、约束、判据、脚本清单、经验记录
 └── scripts/
+    ├── contract.py         # 数据契约:文件名 / 字段 / 值域的单一定义处(其余脚本共用)
     ├── zhihu_env.py        # 环境解析:定位知乎 CLI、探测凭证状态(其余脚本共用)
     ├── doctor.py           # 环境与数据体检;--discover 自动发现工作根目录
     ├── run.py              # 取热榜 + 关键词搜索召回
     ├── question_fetch.py   # 按问题取高赞回答(与搜索候选取并集;写入覆盖率)
+    ├── question_add.py     # 单问题追加追踪:把单独搜的问题并入当日交付物
     ├── fulltext.py         # 补全被截断的回答正文
     ├── search_many.py      # 延伸检索:按查询文件逐条执行并落盘
-    ├── merge_extension.py  # 合并延伸结果并做格式与约束校验
-    ├── topic_lib.py        # 话题库维护:收录 / 查重 / 重建 / 清理
+    ├── merge_extension.py  # 合并延伸结果(链式校验 + 按链展平)+ 事实性复核
+    ├── verify_ext.py       # 信源门槛 / 多源印证 / 链接探活(通常由 merge 自动调用)
+    ├── topic_lib.py        # 话题库维护:收录 / 查重 / 筛选 / 重建 / 清理
     ├── check.py            # 数据完整性校验 + 覆盖率报告
     ├── fill_excel.py       # 写入月度 Excel
     ├── gen_html.py         # 生成分页网页
     ├── verify_html.py      # 网页结构校验
-    └── top2_select.py      # 可选:把已抓取的全量回答压缩为每问题 2 条
+    └── prompt_swarm.md     # 延伸检索 subagent 的提示词模板
 ```
 
 ## 依赖
