@@ -26,6 +26,8 @@ import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(�
 TYPES = contract.EXT_TYPES
 MAX_PER_TYPE = contract.EXT_MAX_PER_TYPE
 LEN_WARN = contract.EXT_CONTENT_LEN
+RELATIONS = contract.EXT_RELATIONS
+EXT_REQUIRED = contract.EXT_REQUIRED
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -83,34 +85,87 @@ def load_rank(src, n):
     return data, path
 
 
+def check_item(it, n, where, old):
+    """校验单条证据, 返回规范化后的 dict(或 None 表示结构性错误)。"""
+    if not isinstance(it, dict):
+        old.append(f"rank_{n}: {where} 不是对象")
+        return None
+    missing = [k for k in EXT_REQUIRED if not it.get(k)]
+    if missing:
+        old.append(f"rank_{n}: {where} 缺字段 {missing}")
+    t = it.get("type")
+    if t not in TYPES:
+        old.append(f"rank_{n}: {where} type 非法: {t!r} (应为 案例/人物/链路)")
+    url = str(it.get("url") or "")
+    if not url.startswith("http"):
+        old.append(f"rank_{n}: {where} url 异常: {url!r}")
+    content = str(it.get("content") or "")
+    if content and not (LEN_WARN[0] <= len(content) <= LEN_WARN[1]):
+        old.append(f"rank_{n}: {where} content 长度 {len(content)} 字(建议 {LEN_WARN[0]}-{LEN_WARN[1]})")
+    rel = str(it.get("relation") or "").strip()
+    if rel and rel not in RELATIONS:
+        old.append(f"rank_{n}: {where} relation 非法: {rel!r} (应为 印证/反驳/边界)")
+    return {"type": t, "content": content, "url": url, "note": str(it.get("note") or ""),
+            "relation": rel, "claim": ""}
+
+
+def normalize_chains(chains, n, warnings, errors):
+    """校验链式结构: 每条链 = 想法 + 证据[≥1] + 落点, 证据逐条带 relation。"""
+    norm = []
+    for ci, ch in enumerate(chains, 1):
+        if not isinstance(ch, dict):
+            errors.append(f"rank_{n}: chains[{ci}] 不是对象")
+            continue
+        claim = str(ch.get("claim") or "").strip()
+        takeaway = str(ch.get("takeaway") or "").strip()
+        ev = ch.get("evidence")
+        if not claim:
+            errors.append(f"rank_{n}: chains[{ci}] 缺 claim(想法)")
+        if not isinstance(ev, list) or not ev:
+            errors.append(f"rank_{n}: chains[{ci}] 缺 evidence(证据列表为空)")
+            ev = []
+        if not takeaway:
+            warnings.append(f"rank_{n}: chains[{ci}] 缺 takeaway(落点, HTML 会少一行结论)")
+        evs = []
+        for i, it in enumerate(ev, 1):
+            v = check_item(it, n, f"chains[{ci}].evidence[{i}]", errors)
+            if v is None:
+                continue
+            if not v["relation"]:
+                v["relation"] = contract.EXT_RELATION_DEFAULT
+                warnings.append(f"rank_{n}: chains[{ci}].evidence[{i}] 未标 relation, 默认「{v['relation']}」")
+            v["claim"] = claim
+            evs.append(v)
+        norm.append({"claim": claim, "takeaway": takeaway, "evidence": evs})
+    return norm
+
+
 def normalize(data, n, warnings, errors):
     items = data.get("items")
-    if not isinstance(items, list) or not items:
-        errors.append(f"rank_{n}: items 缺失或为空")
-        items = []
+    chains_raw = data.get("chains")
+    chains = []
+    if isinstance(chains_raw, list) and chains_raw:
+        # 链式(现行格式): items 由 chains 展平得出
+        chains = normalize_chains(chains_raw, n, warnings, errors)
+        norm_items = [e for c in chains for e in c["evidence"]]
+        if isinstance(items, list) and items and len(items) != len(norm_items):
+            warnings.append(f"rank_{n}: 同时给了 chains({len(norm_items)} 证据) 与 items({len(items)} 条), "
+                            f"以 chains 为准(items 会被展平结果覆盖)")
+    else:
+        # 扁平(历史格式): 无链结构, 全部证据归为一条未标注想法的链
+        if not isinstance(items, list) or not items:
+            errors.append(f"rank_{n}: 既没有 chains 也没有 items")
+            items = []
+        norm_items = []
+        for i, it in enumerate(items, 1):
+            v = check_item(it, n, f"items[{i}]", errors)
+            if v is not None:
+                norm_items.append(v)
 
-    norm_items = []
     type_count = {}
-    for i, it in enumerate(items, 1):
-        if not isinstance(it, dict):
-            errors.append(f"rank_{n}: items[{i}] 不是对象")
-            continue
-        missing = [k for k in ("type", "content", "url", "note") if not it.get(k)]
-        if missing:
-            errors.append(f"rank_{n}: items[{i}] 缺字段 {missing}")
-        t = it.get("type")
-        if t not in TYPES:
-            errors.append(f"rank_{n}: items[{i}] type 非法: {t!r} (应为 案例/人物/链路)")
-        else:
-            type_count[t] = type_count.get(t, 0) + 1
-        url = str(it.get("url") or "")
-        if not url.startswith("http"):
-            errors.append(f"rank_{n}: items[{i}] url 异常: {url!r}")
-        content = str(it.get("content") or "")
-        if content and not (LEN_WARN[0] <= len(content) <= LEN_WARN[1]):
-            warnings.append(f"rank_{n}: items[{i}] content 长度 {len(content)} 字(建议 {LEN_WARN[0]}-{LEN_WARN[1]})")
-        norm_items.append({"type": t, "content": content, "url": url, "note": str(it.get("note") or "")})
-
+    for it in norm_items:
+        if it["type"] in TYPES:
+            type_count[it["type"]] = type_count.get(it["type"], 0) + 1
     for t, c in type_count.items():
         if c > MAX_PER_TYPE:
             errors.append(f"rank_{n}: type「{t}」共 {c} 条, 超过上限 {MAX_PER_TYPE}")
@@ -134,6 +189,7 @@ def normalize(data, n, warnings, errors):
         "rank": data.get("rank", n),
         "title": data.get("title", ""),
         "url": data.get("url", ""),
+        "chains": chains,
         "items": norm_items,
         "thinking": thinking,
         "category": data.get("category") or "未分类",
@@ -202,7 +258,7 @@ def main():
         tc = {}
         for it in b["items"]:
             tc[it["type"]] = tc.get(it["type"], 0) + 1
-        stats.append((k, len(b["items"]), tc, b["category"], bool(b["thinking"])))
+        stats.append((k, len(b["items"]), tc, b["category"], bool(b["thinking"]), len(b.get("chains") or [])))
 
     if warnings and not args.quiet:
         print(f"[WARN] {len(warnings)} 条警告:")
@@ -223,10 +279,12 @@ def main():
         json.dump(ext, f, ensure_ascii=False, indent=1)
 
     total = sum(len(b["items"]) for b in ext.values())
+    n_chain = sum(len(b.get("chains") or []) for b in ext.values())
     print(f"[OK] extension.json 写出: {out}")
-    print(f"     {len(ext)} 个 rank, {total} 条 items, {len(url_owner)} 个唯一 URL, {len(dups)} 条跨 rank 复用")
-    for k, cnt, tc, cat, has_th in stats:
-        print(f"     rank{k}: {cnt} 条 {tc} | {cat} | thinking {'有' if has_th else '缺'}")
+    print(f"     {len(ext)} 个 rank, {total} 条 items, {n_chain} 条发散链, "
+          f"{len(url_owner)} 个唯一 URL, {len(dups)} 条跨 rank 复用")
+    for k, cnt, tc, cat, has_th, nch in stats:
+        print(f"     rank{k}: {nch} 链 / {cnt} 条证据 {tc} | {cat} | thinking {'有' if has_th else '缺'}")
     print("     下一步: python scripts/topic_lib.py update --root <ROOT> --date <D>")
 
 

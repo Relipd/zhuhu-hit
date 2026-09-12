@@ -96,7 +96,7 @@ details.a-text summary { cursor: pointer; color: var(--gold); font-size: 12.5px;
 details.a-text div { background: #fafaf7; border: 1px solid var(--line); border-radius: 8px;
   padding: 12px 14px; margin-top: 6px; white-space: pre-wrap; line-height: 1.7; color: #3a372f; }
 .ext { background: var(--gold-bg); border-top: 2px solid #d9c68a; padding: 14px 24px 16px; font-size: 13.5px; }
-.ext-head { font-weight: 700; color: #8a6d1a; margin-bottom: 7px; font-size: 14px; }
+.ext-head { font-weight: 700; color: #8a6d1a; margin-bottom: 9px; font-size: 14px; }
 .ext-thinking { margin: 0 0 8px; color: #5b4a1a; line-height: 1.65; font-size: 13px; }
 .ext-thinking b { color: #8a6d1a; }
 .ext-item { margin: 5px 0; color: #444; font-size: 13px; }
@@ -104,6 +104,31 @@ details.a-text div { background: #fafaf7; border: 1px solid var(--line); border-
 .ext-item a { color: var(--ink); text-decoration: none; font-size: 12.5px; }
 .ext-item a:hover { text-decoration: underline; }
 .ext-item .note { color: var(--muted); font-size: 12px; }
+/* 发散链: 想法 → 证据(印证/反驳/边界) → 落点 */
+.chain { background: #fffdf6; border: 1px solid #e6dbc0; border-left: 3px solid var(--gold);
+  border-radius: 8px; padding: 10px 14px 11px; margin: 0 0 10px; }
+.chain-claim { color: #6b5518; font-weight: 700; font-size: 13.5px; line-height: 1.6; margin-bottom: 6px; }
+.chain-no { display: inline-block; background: var(--gold); color: #fff; border-radius: 4px;
+  padding: 1px 6px; font-size: 11.5px; margin-right: 7px; vertical-align: 1px; font-weight: 700; }
+.chain-ev { color: #444; font-size: 13px; line-height: 1.65; margin: 4px 0 4px 22px;
+  padding-left: 9px; border-left: 2px solid #efe7d2; }
+.chain-ev b { color: #8a6d1a; font-size: 12.5px; }
+.chain-ev a { color: var(--ink); text-decoration: none; font-size: 12.5px; }
+.chain-ev a:hover { text-decoration: underline; }
+.chain-ev .note { color: var(--muted); font-size: 12px; }
+.rel { display: inline-block; border-radius: 4px; padding: 0 5px; margin-right: 6px;
+  font-size: 11.5px; font-weight: 700; color: #fff; vertical-align: 1px; }
+.rel.ok { background: #2f7d4f; }
+.rel.no { background: #b4453a; }
+.rel.mid { background: #b08d2e; }
+.chain-take { margin: 7px 0 0 22px; color: #4a4335; font-size: 13px; line-height: 1.6;
+  background: #f6f1e2; border-radius: 6px; padding: 6px 10px; }
+.chain-take b { color: #8a6d1a; }
+details.think { margin-top: 10px; }
+details.think summary { cursor: pointer; color: #8a6d1a; font-size: 12.5px; font-weight: 700; }
+details.think div { background: #fffdf6; border: 1px solid #e6dbc0; border-radius: 8px;
+  padding: 10px 12px; margin-top: 6px; white-space: pre-wrap; line-height: 1.65;
+  color: #5b5545; font-size: 12.5px; }
 .pager { display: flex; gap: 12px; margin: 20px 0 8px; }
 .pager a { flex: 1; text-align: center; background: var(--card); border: 1px solid var(--line);
   border-radius: 10px; padding: 10px; text-decoration: none; color: var(--ink); font-size: 13.5px;
@@ -217,17 +242,43 @@ def main():
 
     def ext_html(rank):
         e = ext.get(str(rank))
-        if not e or not (e.get("items") or e.get("thinking")):
+        if not e or not (e.get("items") or e.get("chains") or e.get("thinking")):
             return ""
         parts = [f'<div class="ext"><div class="ext-head">🧠 {contract.HTML_EXT_MARK}（发散分析）</div>']
-        if e.get("thinking"):
-            parts.append(f'<div class="ext-thinking"><b>思考过程：</b>{html.escape(e["thinking"])}</div>')
-        for it in e.get("items", []):
+        chains = e.get("chains") or []
+
+        def ev_html(it):
+            rel = it.get("relation") or ""
+            badge = ""
+            if rel:
+                cls = contract.EXT_RELATION_CSS.get(rel, "mid")
+                badge = f'<span class="rel {cls}">{html.escape(rel)}</span>'
             url = it.get("url", "")
             link = f' <a href="{html.escape(url)}" target="_blank">[来源]</a>' if url else ""
             note = f' <span class="note">({html.escape(it["note"])})</span>' if it.get("note") else ""
-            parts.append(f'<div class="ext-item"><b>[{html.escape(it["type"])}]</b> '
-                         f'{html.escape(it["content"])}{link}{note}</div>')
+            return (f'<div class="chain-ev">{badge}<b>[{html.escape(it["type"])}]</b> '
+                    f'{html.escape(it["content"])}{link}{note}</div>')
+
+        if chains:
+            # 结构化: 每条链 = 想法 → 证据(印证/反驳/边界) → 落点
+            for ci, ch in enumerate(chains, 1):
+                parts.append('<div class="chain">')
+                parts.append(f'<div class="chain-claim"><span class="chain-no">'
+                             f'{contract.HTML_EXT_CLAIM_PREFIX} {ci}</span>'
+                             f'{html.escape(ch.get("claim", ""))}</div>')
+                for it in ch.get("evidence", []):
+                    parts.append(ev_html(it))
+                if ch.get("takeaway"):
+                    parts.append(f'<div class="chain-take"><b>落点：</b>'
+                                 f'{html.escape(ch["takeaway"])}</div>')
+                parts.append('</div>')
+        else:
+            # 兼容历史格式(无 chains): 退回扁平条目列表
+            for it in e.get("items", []):
+                parts.append(ev_html(it))
+        if e.get("thinking"):
+            parts.append('<details class="think"><summary>思考过程（检索路径与收敛依据）</summary>'
+                         f'<div>{html.escape(e["thinking"])}</div></details>')
         parts.append("</div>")
         return "".join(parts)
 

@@ -302,15 +302,31 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 
 对热榜前 10 名问题做**发散性思维扩展**,同步到 Excel「热点拓展」sheet 与 HTML 问题卡片内的「🧠 热点拓展思考」块。
 
+### 结构化框架:发散链(2026-09-12 用户要求「条目要清晰」后确立)
+
+热点拓展**不是条目清单,而是若干条论证链**。每个 rank 产出几条链,每条链固定三段:
+
+```text
+想法(claim)  ——回答区里的一个判断,一句话,可追溯到具体回答
+  ├─ 证据(evidence) 每条标 relation: 印证 / 反驳 / 边界
+  └─ 落点(takeaway) ——这条链最后说明了什么(不是复述证据,而是给出结论)
+```
+
+- **为什么必须是链**:扁平条目列表 + 一大段 thinking 的旧格式,读者看不出「这条证据是在支持哪个论点」,也看不出正反两侧(实测 2026-09-12 的交付物即如此)。链式结构强制每条证据回答「我在印证谁、反驳谁」。
+- **relation 三个值**:`印证`(支持该想法)/ `反驳`(推翻或严重削弱该想法)/ `边界`(只在附加条件下成立,即「对,但仅限…」)。`边界` 是最高频也最容易被漏掉的一类。
+- **一条链可以只有 1 条证据**(如某想法只有一个边界样本),但**不能为凑链数把不同论点的证据混进同一条链**。
+- **每条证据只能归入一条链**(避免在 Excel/HTML 里重复出现);merge 按链展平出 `items` 供话题库使用。
+- 同 rank 内 2–4 条链为宜(实测 2026-09-12 十个 rank 共产出 31 条链 / 65 条证据)。
+
 ### 执行方式:Agent Swarm(rank 1-10 并行)
 
 主 Agent 负责调度,subagent 负责单个 rank 的完整发散:
 
 1. **前置准备(主 Agent)**:① 读话题库(见下,了解已有话题与案例,避免跨日期重复);② 为每个 rank 建独立工作目录 `ext_search/<D>/rank_<n>/` 与独立查询文件 `ext_search/<D>/queries_rank_<n>.json`(**文件按 rank 隔离,防并发冲突,坑 16**)。
 2. **派发**:rank 1-10 各派一个 subagent(可 2-3 个 agent 各包 2-5 个 rank),每个 subagent 独立执行:
-   ① 读该 rank 的回答(answers_summary.json 对应段)→ 判断问题类型(社会事件类/非时效类)→ 按发散逻辑凝练
-   ② 动态发散搜索:每轮 **1 条**查询(写自己的查询文件、输出到自己的目录,`python scripts/search_many.py <自己的queries.json> <自己的outdir> --db zhihu`),**每轮检索前先做收敛性判断(见下)**
-   ③ 收敛即止,产出该 rank 的 `items`(每条 `type/content/url/note`)+ `thinking`
+   ① 读该 rank 的回答(answers_summary.json 对应段)→ 判断问题类型(社会事件类/非时效类)→ **先立想法,再找证据**:从回答里提炼出 2-4 个可被证据检验的判断,而不是先搜再想
+   ② 动态发散搜索:每轮 **1 条**查询(写自己的查询文件、输出到自己的目录,`python scripts/search_many.py <自己的queries.json> <自己的outdir> --db zhihu`),**每轮检索前先做收敛性判断(见下)**;每条证据要判明它对该想法是印证、反驳还是边界
+   ③ 收敛即止,产出该 rank 的 `chains`(想法 + 证据 + 落点)+ `thinking`
 3. **汇总(主 Agent)**:运行 `python scripts/merge_extension.py --root <ROOT> --date <D>` 完成格式统一、schema 强校验与跨 rank 去重报告,再 `topic_lib.py update` 更新话题库。**不要相信 subagent 的「已校验通过」自述**(实测有 subagent 自述合规但同类型实为 5 条),必须由本脚本复核。
 
 ### subagent 输出 schema(强制,违反会被 merge_extension.py 判失败)
@@ -322,18 +338,28 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
   "rank": 7,
   "title": "<原问题标题>",
   "url": "<原问题 URL>",
-  "category": "<主题分类, 如 影视与短剧 / 消费电子>",
-  "items": [
-    {"type": "案例", "content": "要点提炼(60-150字)", "url": "真实来源链接", "note": "发散点说明"}
+  "category": "<主题分类, 如 劳动权益与消费 / 外交政策与国际关系>",
+  "chains": [
+    {
+      "claim": "想法：回答区里的一个判断（一句话，不含证据）",
+      "evidence": [
+        {"relation": "印证", "type": "案例", "content": "要点提炼(60-300字，含数字/时间/主体)",
+         "url": "真实来源链接", "note": "这条证据说明了什么、为什么标这个 relation"}
+      ],
+      "takeaway": "落点：这条链最后说明了什么（结论，不是复述证据）"
+    }
   ],
-  "thinking": "发散思考过程"
+  "thinking": "发散思考过程(为何立这些想法、检索路径、收敛依据、被舍去的同类案例)"
 }
 ```
 
-- `thinking` **必填**,不要用 `divergence_dirs` 等替代字段名(merge 会告警并用其合成,但 Excel/HTML 的可读性会下降);
-- 同一 `type`(案例/人物/链路)**≤3 条**,这是硬约束,超限会被 merge 判失败;
+- `chains` **必填**且非空;每条链 `claim` 与 `takeaway` 都要写(缺 takeaway 会被 merge 告警、HTML 少一行结论);
+- `evidence` 每条必须带 `relation`(不写会被 merge 默认成「印证」并告警);
+- 同一 `type`(案例/人物/链路)**≤3 条**(按**该 rank 全部证据**计,不是每条链各算);
+- 旧格式(顶层 `items` 扁平列表)**仍被兼容**,但会渲染成"无想法的证据堆",交付物可读性差,新产出不再使用;
+- `thinking` 必填,不要用 `divergence_dirs` 等替代字段名;
 - `url` 必须取自搜索结果原文链接,禁止伪造;无来源的推断在 content 中标注「推断」;
-- 派发 prompt 里直接粘贴本 schema **与「约束五:禁止名词解释类查询」**,并要求 subagent 结束时自报「items 数 / type 分布 / 搜索轮数」。
+- 派发 prompt 里直接粘贴本 schema **与「约束五:禁止名词解释类查询」**,并要求 subagent 结束时自报「链数 / 证据数 / type 分布 / 搜索轮数」。
 - 派发 prompt 里同时给出**三类首选查询构造式**(具体案件+索赔金额+法院结论 / 调研样本数+百分比 / 人口抽样公报口径)与**「同类案例只取一条,其余写进 thinking 并以『未采用但值得记录——』起头」**这两条规则(见约束五与收敛性判断);主 Agent 汇总时按此复核。
 
 ### 话题库(跨日期累积,双轨:index.json 机读 + md 人读)
@@ -393,16 +419,20 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 ### 其他(不变)
 
 - **URL 定向(强制)**:原问题(标题/URL/全部回答)完整保留,发散不改变原问题;每个发散点必须附真实来源 `url`(取自搜索结果中的原文链接),无来源的推断在 content 中标注「推断」,禁止伪造链接。
-- **输出** `raw/<day>/extension.json`:
+- **输出** `raw/<day>/extension.json`(由 `merge_extension.py` 按链展平:链是结构,`items` 是展平结果,两者同时存在):
   ```json
-  {"1": {"rank":1, "title":"...", "url":"...",
-         "items": [{"type":"案例", "content":"...", "url":"...", "note":"..."}],
+  {"1": {"rank": 1, "title": "...", "url": "...", "category": "...",
+         "chains": [{"claim": "想法", "takeaway": "落点",
+                     "evidence": [{"relation": "印证", "type": "案例",
+                                   "content": "...", "url": "...", "note": "..."}]}],
+         "items": [{"relation": "印证", "claim": "想法", "type": "案例",
+                    "content": "...", "url": "...", "note": "..."}],
          "thinking": "发散思考过程(该问题值得延伸的方向与关联)"}}
   ```
-- Excel「热点拓展」sheet:日期 | 排名 | 问题标题 | 扩展类型(案例/人物/链路/思考过程)| 扩展内容 | 来源链接 | 备注;最新日期块在最上,跨日期自动累积。
+- Excel「热点拓展」sheet:`日期 | 排名 | 问题标题 | 扩展类型 | 扩展内容 | 来源链接 | 备注 | 发散想法 | 关系`;链式渲染会额外产出「**想法**」与「**落点**」两类行(扩展类型列标出),证据行的「关系」列给出 印证/反驳/边界。末两列为新增,追加在末尾以保证历史日期的行不错位。最新日期块在最上,跨日期自动累积。
 - 范围硬约束:**只处理热榜前 10**,第 11-20 名不扩展(主流程四维分析照常覆盖全部 20)。
 
-## 踩过的坑(1-34,勿重蹈)
+## 踩过的坑(1-35,勿重蹈)
 
 1. **PS 5.1 管道换行 → AUTH_INVALID**:`"secret" | zhihu-cli auth set --secret-stdin` 会追加换行导致服务端校验失败(Secret 本身有效)。用 `cmd /c "echo|set /p=<secret>|<cli> auth set --secret-stdin"` 无换行传入。
 2. **无 BOM UTF-8 ps1 在 PS 5.1 报语法错误**:官方脚本(run.ps1/setup.ps1)含中文注释,需转存为带 BOM 的 UTF-8 才能被 PS 5.1 解析。
@@ -438,6 +468,7 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 32. **PS 5.1 按 ANSI 读无 BOM 的 .ps1**:含中文的临时回归脚本若存成无 BOM UTF-8,`powershell -File` 会以 GBK 解码,报 `Unexpected token` 而非执行。用 `[IO.File]::WriteAllText($p,$s,(New-Object Text.UTF8Encoding($true)))` 存带 BOM 版本(与坑 2 同源);或直接改用 Python 写回归脚本。
 33. **问题维度接口的瞬时 403 会被静默兜底,连覆盖率一起丢**:`question_fetch.py` 连续请求 20 个问题 × 3 页后,知乎网页接口会偶发 403(限流),而**同一 Cookie 单独请求同一问题立刻返回 200**(2026-09-12 实测:rank5 记 HTTP 403 并降级为 `search_fallback`,该问题因此既丢主数据源、也没了 `total_answers/coverage`——覆盖率标注的依据)。现已在**请求单一入口** `get_json()` 加默认 3 次退避重试(`--retry` / `--backoff`,第 n 次等 n×backoff 秒),单问题只在真正连续失败时才降级,并把 `已重试 N 次` 写进 `fetch_error`。**判据**:若跑完看到 `source=search_fallback`,先看 `fetch_error`——是 403 就重跑本步(不要急着换 Cookie),别把它当成 Cookie 失效。
 34. **「案例」类条目会退化成同类个案的堆叠**:实测 2026-09-12 的 rank2 并列「祁东店主无责赔1.9万」与「彭宇案索赔13.6万」、rank5 并列「山西铁头13人落网」与「松哥打虎20余人」——两组各自讲的是**同一类问题**(善意介入被索赔 / 同批打假网红被刑事收网),换成其中任一条论点强度都不变,属于为凑条数反复搜索。用户 2026-09-12 明令:**案例支持类除非存在极大差别,否则只采用一条,不反复搜索**;被舍去的案例写进 `thinking` 并以「未采用但值得记录——」起头。判据见「收敛性判断」第 4 条。收敛此类条目后要**同步改 `ext_search/<D>/rank_<N>/rank_<N>.json`**(否则将来重跑 `merge_extension.py` 会把被合并的条目带回来),再跑 `topic_lib prune` + `update` 与下游 `fill_excel` / `gen_html` / `verify_html`。
+35. **扁平条目列表 + 一大段 thinking ⇒ 交付物读不出论证结构**:旧格式把「洗衣机抽样」「河南病例」「灭活参数」并排堆着,读者无法判断哪条在支持哪个论点、哪条在反驳它(用户 2026-09-12 原话:「没有形成结构化分析的框架…目前太乱了,要求条目要清晰」)。现固定为**发散链**:`想法(claim) → 证据(逐条 relation=印证/反驳/边界) → 落点(takeaway)`,HTML 用金色链块渲染(证据行带彩色关系标签、thinking 收进折叠区),Excel 用「想法/落点」行 + 「关系」列表达同一结构。**注意 `边界` 是最高频也最易漏的一类**(「对,但仅限…」);每条证据只能归入一条链;旧 `items` 格式仍兼容,但只回退成"无想法的证据堆"。
 
 ## 脚本清单(skill/scripts/,全流程通用)
 
@@ -451,7 +482,7 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 | `fulltext.py` | 回答全文补全 + 截断检测(每条自动重试 3 次、失败原因写入 `error`;`--cookie` 解锁全文) | `--root --date --delay --retry --backoff --force --cookie` |
 | `search_many.py` | 批量发散搜索(热点拓展用,queries.json 驱动) | `queries.json outdir --db --delay --count` |
 | `check.py` | 数据完整性校验(分析齐全/情绪值域/URL/内容/状态) | `--root --date` |
-| `merge_extension.py` | **汇总 Swarm 产出** → extension.json:schema 强校验(type 值域 / 同类型≤3 / URL / 必填字段)、容忍嵌套与 `divergence_dirs` 变体、报告跨 rank 重复 URL | `--root --date [--ranks 1-10] [--no-strict]` |
+| `merge_extension.py` | **汇总 Swarm 产出** → extension.json:链式结构强校验(每条链 claim/evidence/takeaway、每条证据 relation 值域)、按链展平 `items`(供话题库)、type 值域 / 同类型≤3 / URL / 必填字段、容忍旧的扁平 `items` 与 `divergence_dirs` 变体、报告跨 rank 重复 URL | `--root --date [--ranks 1-10] [--no-strict]` |
 | `verify_html.py` | **约束四自动校验**(详情页数/折叠数/翻页/入口/索引/接口摘要/拓展范围),退出码 0 即通过 | `--root --date` |
 | `fill_excel.py` | 填月度 Excel(自动建模板、情绪列下拉、截断备注、热点拓展 sheet) | `--root --date --xlsx` |
 | `gen_html.py` | 生成 HTML 展示页(原文状态标签、热点拓展块) | `--root --date --out` |

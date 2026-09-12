@@ -91,6 +91,15 @@ EXT_MAX_PER_TYPE = 3                   # 同一类型条目上限(超出部分�
 EXT_REQUIRED = ("type", "content", "url", "note")
 EXT_CONTENT_LEN = (60, 300)            # content 建议长度(超出仅告警)
 
+# ── 发散链结构(2026-09-12 用户要求: 热点拓展必须是结构化分析, 不是扁平条目堆叠) ──
+# 一条链 = 一个想法(回答区里的判断) → 一组证据(各自印证/反驳/限定该想法) → 一个落点。
+# 生成方(subagent / Agent)写 chains; merge_extension 校验后**同时展平出 items**,
+# 使话题库(按 url 收录)与旧格式消费者无需改动。
+EXT_CHAIN_FIELDS = ("claim", "evidence", "takeaway")
+EXT_RELATIONS = ("印证", "反驳", "边界")   # 证据对想法的关系; 边界=只在附加条件下成立
+EXT_RELATION_DEFAULT = "印证"
+EXT_RELATION_CSS = {"印证": "ok", "反驳": "no", "边界": "mid"}
+
 # ────────────────────────────── HTML 结构标记 ──────────────────────────────
 # 生成方(gen_html)与校验方(verify_html)共用,避免两侧各自硬编码而漂移
 
@@ -98,6 +107,7 @@ HTML_ANSWER_DETAIL_CLASS = "a"         # 回答折叠卡片
 HTML_TEXT_DETAIL_CLASS = "a-text"      # 原文折叠
 HTML_SUMMARY_TAG = "接口摘要"           # 非全文回答的提示标签
 HTML_EXT_MARK = "热点拓展思考"          # 延伸块的标题标记(用于范围校验:仅前 N 名)
+HTML_EXT_CLAIM_PREFIX = "想法"          # 链式渲染时的想法前缀
 
 # ────────────────────────────── 路径构造 ──────────────────────────────
 
