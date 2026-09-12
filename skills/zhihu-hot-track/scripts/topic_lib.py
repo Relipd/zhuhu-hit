@@ -36,7 +36,7 @@ def norm_url(u):
 
 
 def norm_item(it):
-    """把任意历史格式的条目规整成契约字段(丢弃 date/rank 等运行期元数据)。"""
+    """把任意历史格式的条目规整成契约字段(date 缺失留空, 由 backfill_dates 补)。"""
     return {k: (it.get(k) or "") for k in contract.LIB_FIELDS}
 
 
@@ -44,20 +44,48 @@ def normalize_items(items):
     return [norm_item(it) for it in items]
 
 
+def backfill_dates(root, items):
+    """给缺 date 的条目补「首次收录日期」——扫所有 raw/<D>/extension.json, 取最早出现的日期。
+
+    时间只是条目属性(见 contract.LIB_FIELDS 说明): 一条 url 只一行, 多日重复出现不重新入库、
+    也不覆盖已有 date, 因此「时间」不会把同一条事实切成多份。
+    """
+    raw = os.path.join(root, contract.RAW_DIRNAME)
+    first = {}
+    for d in sorted(os.listdir(raw)) if os.path.isdir(raw) else []:
+        p = contract.path_extension(root, d)
+        if not os.path.exists(p):
+            continue
+        with io.open(p, "r", encoding="utf-8-sig") as f:
+            ext = json.load(f)
+        for key in ext:
+            for it in ext[key].get("items", []):
+                first.setdefault(norm_url(it["url"]), d)
+    filled = 0
+    for it in items:
+        if not it.get("date"):
+            d = first.get(norm_url(it["url"]))
+            if d:
+                it["date"] = d
+                filled += 1
+    return filled
+
+
 def similar_pairs(items, new_items, ratio_threshold):
-    """入库时的「疑似同类」体检: 同分类内内容高度重叠的条目对。
+    """入库时的「疑似同类」体检: **同 type 内**内容高度重叠的条目对。
 
     话题库是「避免重复搜索」的库, 但 url 去重挡不住「同一件事被两个来源分别报道」
     (实测: 同一判决被不同自媒体各写一篇, url 不同、内容几乎一致)。
+    按 type(而非 cat)比对: cat 是自由文本、同义分类已出现分叉, 按 cat 比对会漏。
     这里只做**告警不自动合并** —— 是否算同一类由 Agent 判定(见 SKILL.md 收敛性判断第 4 条)。
     """
     import difflib
     out = []
-    by_cat = {}
+    by_type = {}
     for it in items:
-        by_cat.setdefault(it.get("cat") or "", []).append(it)
+        by_type.setdefault(it.get("type") or "", []).append(it)
     for n in new_items:
-        for o in by_cat.get(n.get("cat") or "", []):
+        for o in by_type.get(n.get("type") or "", []):
             r = difflib.SequenceMatcher(None, n.get("content") or "", o.get("content") or "").ratio()
             if r >= ratio_threshold:
                 out.append((round(r, 2), n, o))
@@ -86,24 +114,43 @@ def parse_md(md_text):
 
 
 def rebuild_md(items):
-    cats = []
+    """人读视图: 一级按 type 分组(全局唯一索引), 二级按 cat 分组(仅展示用的父子层)。
+
+    筛选与匹配按**维度**做(见 contract.LIB_GROUP_FIELD): type 是 3 个稳定取值的全局桶,
+    cat 是自由文本标签 —— 若把 type 做成 cat 的子节点, 同一维度会被复制 19 份(多次区隔)。
+    """
+    gfield = contract.LIB_GROUP_FIELD
+    groups = []
     for it in items:
-        if it["cat"] not in cats:
-            cats.append(it["cat"])
+        g = it.get(gfield) or "未分类"
+        if g not in groups:
+            groups.append(g)
     out = ["# 话题库(跨日期累积)", "",
            "机读索引: index.json(url 唯一键去重)。维护: `topic_lib.py update / search / rebuild`(见 skill scripts)。",
-           "条目字段: 分类 / 类型 / 内容 / 来源链接(不记日期与榜位 —— 本库用于「这条线索是否已查过」,"
-           "收录时间无判定价值)。发散搜索前查重: 同一主题不重复搜索、同一类型案例 ≤3、已收录条目不重复收录。", ""]
-    for cat in cats:
-        rows = [x for x in items if x["cat"] == cat]
-        out.append("## %s（%d）" % (cat, len(rows)))
+           "筛选维度: **type**(一级, %s)——全局唯一索引; **cat**(主题标签, 仅展示层二级分组); "
+           "**date**(首次收录日期, 只作属性, 不按日期分桶)。" % " / ".join(contract.EXT_TYPES),
+           "发散搜索前查重: 同一主题不重复搜索、同一类型案例 ≤3、已收录条目不重复收录。",
+           "共 %d 条 | %s" % (len(items), " / ".join(
+               "%s %d" % (g, sum(1 for x in items if (x.get(gfield) or "未分类") == g)) for g in groups)), ""]
+    for g in groups:
+        rows = [x for x in items if (x.get(gfield) or "未分类") == g]
+        out.append("## %s（%d）" % (g, len(rows)))
         out.append("")
-        out.append("| 类型 | 内容要点 | 来源 url |")
-        out.append("|---|---|---|")
+        cats = []
         for it in rows:
-            c = it["content"] if len(it["content"]) <= 58 else it["content"][:58] + "…"
-            out.append("| {t} | {c} | {u} |".format(t=it["type"], c=c, u=it["url"]))
-        out.append("")
+            c = it.get("cat") or "未分类"
+            if c not in cats:
+                cats.append(c)
+        for c in cats:
+            sub = [x for x in rows if (x.get("cat") or "未分类") == c]
+            out.append("### %s（%d）" % (c, len(sub)))
+            out.append("")
+            out.append("| 日期 | 内容要点 | 来源 url |")
+            out.append("|---|---|---|")
+            for it in sub:
+                t = it["content"] if len(it["content"]) <= 58 else it["content"][:58] + "…"
+                out.append("| {d} | {c} | {u} |".format(d=it.get("date") or "-", c=t, u=it["url"]))
+            out.append("")
     return "\n".join(out)
 
 
@@ -118,9 +165,12 @@ def cmd_update(root, date):
             items = parse_md(f.read())
         print("index.json 为空,已从现有 md 迁移", len(items), "条")
     legacy = sum(1 for it in items if set(it) - set(contract.LIB_FIELDS))
-    items = normalize_items(items)          # 迁移: 丢掉 date/rank 等运行期元数据
+    items = normalize_items(items)
     if legacy:
-        print("已按新字段规整 %d 条旧条目(丢弃 date/rank)" % legacy)
+        print("已按契约字段规整 %d 条旧条目" % legacy)
+    filled = backfill_dates(root, items)
+    if filled:
+        print("已补 %d 条缺失的首次收录日期(date 只作属性, 不影响去重)" % filled)
 
     ext_path = contract.path_extension(root, date)
     added_items = []
@@ -140,7 +190,8 @@ def cmd_update(root, date):
                         seen[n]["content"] = it["content"]
                         upgraded += 1
                     continue
-                rec = {"cat": cat, "type": it["type"], "content": it["content"], "url": it["url"]}
+                rec = {"date": date, "type": it["type"], "cat": cat,
+                       "content": it["content"], "url": it["url"]}
                 items.append(rec)
                 seen[n] = rec
                 added_items.append(rec)
@@ -168,26 +219,49 @@ def cmd_update(root, date):
           ", ".join(sorted(cats)))
 
 
-def cmd_search(root, url=None, keyword=None, cat=None):
-    items = load_index(contract.lib_index(root))
+def cmd_search(root, url=None, keyword=None, cat=None, type_=None, since=None, until=None):
+    """查重/筛选。维度可组合: --type(一级) + --cat(标签) + --since/--until(时间属性)。
+
+    匹配优先按 type 收窄(3 个稳定值), cat 与日期只做过滤, 因为 cat 是自由文本(同义分叉),
+    拿它当路由键会让误判的条目直接失联。
+    """
+    items = normalize_items(load_index(contract.lib_index(root)))
     if not items:
         print("index.json 为空,先执行 topic_lib.py update")
         return 1
-    hits = []
+    hits = items
+    label = []
     if url:
         n = norm_url(url)
-        hits = [it for it in items if norm_url(it["url"]) == n]
-        print("URL 查重:", ("命中 " + str(len(hits)) + " 条(已收录,不重复搜索)") if hits else "未收录,可搜索")
-    elif keyword:
-        # 子串匹配, 只扫 content 与 cat(库是查重用的, 不做全文检索)
-        hits = [it for it in items if keyword in it["content"] or keyword in it["cat"]]
-        print("关键词「" + keyword + "」命中 " + str(len(hits)) + " 条")
-    elif cat:
-        hits = [it for it in items if it["cat"] == cat]
-        print("分类「" + cat + "」共 " + str(len(hits)) + " 条")
+        hits = [it for it in hits if norm_url(it["url"]) == n]
+        print("URL 查重:", ("命中 %d 条(已收录,不重复搜索)" % len(hits)) if hits else "未收录,可搜索")
+        for it in hits:
+            print("  [%s] (%s) %s | %s" % (it.get("date") or "-", it["type"], it["content"][:50], it["url"]))
+        return 0
+    if type_:
+        hits = [it for it in hits if it["type"] == type_]
+        label.append("type=%s" % type_)
+    if cat:
+        hits = [it for it in hits if it["cat"] == cat]
+        label.append("cat=%s" % cat)
+    if since:
+        hits = [it for it in hits if (it.get("date") or "") >= since]
+        label.append("since=%s" % since)
+    if until:
+        hits = [it for it in hits if (it.get("date") or "9999") <= until]
+        label.append("until=%s" % until)
+    if keyword:
+        hits = [it for it in hits if keyword in it["content"] or keyword in it["cat"]]
+        label.append("keyword=%s" % keyword)
+    print("筛选 %s 命中 %d 条" % (" ".join(label) or "(无条件)", len(hits)))
+    by_type = {}
+    for it in hits:
+        by_type[it["type"]] = by_type.get(it["type"], 0) + 1
+    if by_type:
+        print("  按 type:", by_type)
     for it in hits[:20]:
-        print("  [{c}] ({t}) {x} | {u}".format(c=it["cat"], t=it["type"],
-              x=it["content"][:50], u=it["url"]))
+        print("  [%s] (%s) %s | %s" % (it.get("date") or "-", it["type"],
+                                      it["content"][:50], it["url"]))
     if len(hits) > 20:
         print("  ... 共", len(hits), "条")
     return 0
@@ -250,17 +324,21 @@ def main():
     s.add_argument("--url")
     s.add_argument("--keyword")
     s.add_argument("--cat")
+    s.add_argument("--type", dest="type_", choices=list(contract.EXT_TYPES),
+                   help="按一级维度筛选(案例/人物/链路)")
+    s.add_argument("--since", help="收录日期 >= YYYY-MM-DD")
+    s.add_argument("--until", help="收录日期 <= YYYY-MM-DD")
     r = sub.add_parser("rebuild")
     r.add_argument("--root", required=True)
     p = sub.add_parser("prune")
     p.add_argument("--root", required=True)
     p.add_argument("--date", default=None,
-                   help="已废弃(条目不再记日期): 传入会被忽略, 一律做全库一致性扫描")
+                   help="已废弃(时间只作条目属性): 传入会被忽略, 一律做全库一致性扫描")
     a = ap.parse_args()
     if a.cmd == "update":
         cmd_update(a.root, a.date)
     elif a.cmd == "search":
-        return cmd_search(a.root, a.url, a.keyword, a.cat)
+        return cmd_search(a.root, a.url, a.keyword, a.cat, a.type_, a.since, a.until)
     elif a.cmd == "rebuild":
         cmd_rebuild(a.root)
     elif a.cmd == "prune":
