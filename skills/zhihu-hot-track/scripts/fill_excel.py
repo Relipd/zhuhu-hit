@@ -77,7 +77,6 @@ def main():
     if not os.path.exists(xlsx):
         ensure_workbook(xlsx, year, month)
 
-    hot = json.load(open(contract.path_hot(args.root, args.date), encoding="utf-8-sig"))
     summary = json.load(open(contract.path_answers(args.root, args.date), encoding="utf-8"))
     an = json.load(open(contract.path_analysis(args.root, args.date), encoding="utf-8"))
     ext_path = contract.path_extension(args.root, args.date)
@@ -103,6 +102,8 @@ def main():
                 len(s["answers"]), s["total_answers"],
                 len(s["answers"]) / s["total_answers"] * 100)
         note_q = ("问题点赞数=该问题最高赞回答" if top is not None else "") + cov
+        if s.get("extra"):
+            note_q = (note_q + " | " if note_q else "") + "追加追踪(非榜单条目)"
         ws.append(["问题", rank, rank, s["title"], s["url"], top, q["essence"],
                    None, None, None, None, None, None, None, None,
                    note_q or None])

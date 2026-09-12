@@ -51,10 +51,14 @@ def main():
     def check(name, ok, detail=""):
         results.append((ok, name, detail))
 
-    # 前置数据
-    hot = json.load(io.open(hot_path, encoding="utf-8-sig"))
+    # 前置数据。**条目数基准 = answers_summary**(含单问题追加条目), hot.json 只用于标注;
+    # 2026-09-12 起支持"当天只做单问题追踪"(无 hot.json)与"追加 rank 21+", 故 hot 必须容错读。
     summary = json.load(io.open(sum_path, encoding="utf-8"))
-    total = len(hot[contract.HOT_ITEMS_PATH[0]][contract.HOT_ITEMS_PATH[1]])
+    total = len(summary)
+    hot_items = contract.read_hot_items(root, d)
+    hot_urls = {str(it.get("Url") or "") for it in hot_items}
+    extra_ranks = {int(s["rank"]) for s in summary if s.get("extra")
+                   or (hot_urls and str(s.get("url") or "") not in hot_urls)}
     answers_of = {int(s["rank"]): len(s["answers"]) for s in summary}
     not_full = sum(1 for s in summary for a in s["answers"] if a.get("content_status") != "full")
 
@@ -75,7 +79,7 @@ def main():
 
     # 3. 详情页数与连续性
     pages = sorted(f for f in os.listdir(pages_dir) if re.fullmatch(r"q\d+\.html", f)) if os.path.isdir(pages_dir) else []
-    check("详情页数 == 热榜条数", len(pages) == total, f"{len(pages)} vs {total}")
+    check("详情页数 == 条目数", len(pages) == total, f"{len(pages)} vs {total}")
     want_names = [contract.page_name(i) for i in range(1, total + 1)]
     missing = [n for n in want_names if n not in pages]
     check("详情页无缺号", not missing, f"缺失: {missing}")
@@ -109,7 +113,7 @@ def main():
     # 6. 索引卡片数
     if os.path.exists(idx):
         card_ids = {int(x) for x in RE_INDEX_CARD.findall(io.open(idx, encoding="utf-8").read())}
-        check("索引卡片数 == 热榜条数", len(card_ids) == total, f"{len(card_ids)} vs {total}")
+        check("索引卡片数 == 条目数", len(card_ids) == total, f"{len(card_ids)} vs {total}")
 
     # 7. 接口摘要标签
     n_tag = 0
@@ -120,8 +124,9 @@ def main():
     check("接口摘要标签数 == 非 full 回答数", n_tag == not_full,
           f"{n_tag} vs {not_full}(带 Cookie 全量补全时应为 0/0)")
 
-    # 8. 拓展范围: 前 10 有、11+ 无
+    # 8. 拓展范围: 榜单前 10 有、11+ 无
     # 注: 页脚含「热点拓展仅覆盖热榜前 10」说明文字, 故用「热点拓展思考」标题判定而非「热点拓展」
+    # 单问题追加条目(rank 21+)默认就跑拓展, 不受"仅前 10"约束, 故跳过范围判定。
     scope_bad = []
     for i in range(1, total + 1):
         p = contract.page_path(root, d, i)
@@ -129,17 +134,20 @@ def main():
             continue
         html = io.open(p, encoding="utf-8").read()
         has_block = contract.HTML_EXT_MARK in html
+        if i in extra_ranks:
+            continue
         if i <= 10 and not has_block:
             scope_bad.append(f"q{i:02d} 缺拓展块")
         if i > 10 and has_block:
             scope_bad.append(f"q{i:02d} 不应有拓展块")
-    check("拓展块仅覆盖前 10", not scope_bad, "; ".join(scope_bad[:8]))
+    check("拓展块仅覆盖前 10(榜单)", not scope_bad, "; ".join(scope_bad[:8]))
 
     # 输出
     fails = [r for r in results if not r[0]]
     for ok, name, detail in results:
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f" — {detail}" if detail and not ok else ""))
-    print(f"HTML 校验: {len(results) - len(fails)}/{len(results)} 通过 (热榜 {total} 条, 非 full 回答 {not_full} 条)")
+    print(f"HTML 校验: {len(results) - len(fails)}/{len(results)} 通过 "
+          f"(条目 {total} 条，其中追加追踪 {len(extra_ranks)} 条; 非 full 回答 {not_full} 条)")
     if fails:
         sys.exit(1)
     print("[OK] 约束四校验全部通过")

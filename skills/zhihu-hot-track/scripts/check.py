@@ -26,17 +26,15 @@ def main():
     ap.add_argument("--date", required=True, help="YYYY-MM-DD")
     args = ap.parse_args()
 
-    hot = json.load(open(contract.path_hot(args.root, args.date), encoding="utf-8-sig"))
     summary = json.load(open(contract.path_answers(args.root, args.date), encoding="utf-8"))
     an = json.load(open(contract.path_analysis(args.root, args.date), encoding="utf-8"))
 
-    items = hot
-    for _k in contract.HOT_ITEMS_PATH:
-        items = items[_k]
+    # hot.json 容错: 当天可能只做了单问题追加追踪, 没有榜单快照
+    items = contract.read_hot_items(args.root, args.date)
 
     problems = []
-    if len(items) == 0:
-        problems.append("热榜为空")
+    if len(items) == 0 and len(summary) == 0:
+        problems.append("热榜与回答数据均为空")
 
     total = 0
     for s in summary:

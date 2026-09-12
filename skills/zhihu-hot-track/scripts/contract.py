@@ -54,6 +54,7 @@ FILE_ANSWERS = "answers_summary.json"  # 回答(含正文、赞数、获取状�
 FILE_ANALYSIS = "analysis.json"        # 逐条四维分析(由 Agent 撰写)
 FILE_EXTENSION = "extension.json"      # 前 N 名的延伸检索产出(由 Swarm 产出后汇总)
 FILE_COOKIE = "cookies.txt"            # 网页登录凭证(供复用)
+FILE_EXTRA = "extra_questions.json"    # 单问题追加追踪登记(不等同榜单条目, rank 接在榜单之后)
 
 LIB_DIRNAME = "话题库"                  # <root>/话题库/
 LIB_INDEX = "index.json"               # 机读索引(唯一键去重)
@@ -241,6 +242,32 @@ def path_extension(root, date):
 
 def path_cookie(root, date):
     return os.path.join(day_dir(root, date), FILE_COOKIE)
+
+
+def path_extra(root, date):
+    """单问题追加追踪登记文件(<root>/raw/<date>/extra_questions.json)"""
+    return os.path.join(day_dir(root, date), FILE_EXTRA)
+
+
+def read_hot_items(root, date):
+    """容错读取榜单条目: hot.json 缺失/为空都返回 [](2026-09-12 起支持"当天只做单问题追踪")。
+
+    注意: **条目数的唯一来源是 answers_summary.json**(它含追加条目), hot.json 只用于
+    标注"哪些是榜单原始条目"与"范围约束(前 10 才做拓展)"。
+    """
+    import io as _io
+    import json as _json
+    p = path_hot(root, date)
+    if not os.path.exists(p):
+        return []
+    try:
+        with _io.open(p, "r", encoding="utf-8-sig") as f:
+            node = _json.load(f)
+        for k in HOT_ITEMS_PATH:
+            node = node[k]
+        return node if isinstance(node, list) else []
+    except Exception:
+        return []
 
 
 def lib_dir(root):

@@ -130,13 +130,15 @@ def qid_of(url):
 
 
 def fetch_question(qid, top, cookie, delay, pages=1):
-    """返回 (answers, total, err)。
+    """返回 (answers, total, title)。
 
-    两个实测要点:
+    三个实测要点:
       1. `order_by=voteup` 并不严格按赞降序(与 default 同序), 因此**必须自行在返回集合内排序**;
-      2. 单页 20 条未必包含全部最热回答, `pages>1` 可多取几页提高"最热 N 条"命中率。
+      2. 单页 20 条未必包含全部最热回答, `pages>1` 可多取几页提高"最热 N 条"命中率;
+      3. **标题只能从这里拿**: `api/v4/questions/{qid}`(单问题元数据接口)实测直接 403,
+         而 answers 接口每条结果自带 `question.title`(2026-09-12 实测)。
     """
-    answers, total, limit = [], None, 20
+    answers, total, limit, title = [], None, 20, ""
     for page in range(max(pages, 1)):
         url = (f"{API}/questions/{qid}/answers?include={ANS_INCLUDE}"
                f"&limit={limit}&offset={page * limit}&order_by=voteup")
@@ -144,6 +146,8 @@ def fetch_question(qid, top, cookie, delay, pages=1):
         data = d.get("data") or []
         if total is None:
             total = (d.get("paging") or {}).get("totals")
+        if data and not title:
+            title = ((data[0].get("question") or {}).get("title") or "")
         if not data:
             break
         for a in data:
@@ -163,11 +167,11 @@ def fetch_question(qid, top, cookie, delay, pages=1):
         if page + 1 < max(pages, 1):
             time.sleep(delay)
     answers.sort(key=lambda a: -(a.get("likes") or 0))
-    return answers[:max(top, 1)], total, None
+    return answers[:max(top, 1)], total, title
 
 
 def fetch_article(pid, cookie):
-    d = get_json(f"{API}/articles/{pid}?include=content,voteup_count,comment_count,author", cookie)
+    d = get_json(f"{API}/articles/{pid}?include=content,voteup_count,comment_count,author,title", cookie)
     content = strip_html(d.get("content"))
     return [{
         "url": f"https://zhuanlan.zhihu.com/p/{pid}",
@@ -176,7 +180,7 @@ def fetch_article(pid, cookie):
         "author": ((d.get("author") or {}).get("name") or ""),
         "comment_count": d.get("comment_count") or 0,
         "content_status": "full" if content else "summary",
-    }], 1, None
+    }], 1, (d.get("title") or "")
 
 
 def fetch_answer(aid, qid, cookie):
