@@ -367,22 +367,24 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 
 ### 话题库(跨日期累积,双轨:index.json 机读 + md 人读)
 
-**双轨结构(可复用索引,防人肉翻表)**:
-- **`<ROOT>/话题库/index.json`(机读索引,唯一数据源)**:`{"items": [{"date","rank","cat","type","content","url"}]}`;url 归一化(去 `?utm_*` 参数)为**唯一键去重**。
-- **`<ROOT>/话题库/话题库.md`(人读展示)**:由 index.json 重建,按分类 heading 组织,条目 `| 日期 | rank | 类型 | 内容要点 | url |`。
+**定位(2026-09-12 用户明确)**:话题库是**「避免后续重复搜索的 database」**,不是运行日志。因此条目**只记「分类 / 类型 / 内容 / 链接」四要素,不记日期与榜位**——date/rank 是收录时间与当日榜位,对「这条线索是否已经查过」没有任何判定价值,反而让同一条事实按日期反复出现、干扰查重。
+
+**双轨结构**:
+- **`<ROOT>/话题库/index.json`(机读索引,唯一数据源)**:`{"items": [{"cat","type","content","url"}]}`(字段由 `contract.LIB_FIELDS` 定义);url 归一化(砍掉 `?` 之后全部查询参数 + 去尾部 `/`)为**唯一键去重**。旧条目里的 `date`/`rank` 会在下次 `update` 时自动规整掉(实测迁移 139 条)。
+- **`<ROOT>/话题库/话题库.md`(人读展示)**:由 index.json 重建,按分类 heading 组织(标题带条数,如 `## 医疗健康（13）`),条目 `| 类型 | 内容要点 | 来源 url |`。
 - **维护脚本 `scripts/topic_lib.py`(全流程强制使用,禁止手改 md)**:
-  - `topic_lib.py update --root <ROOT> --date <D>`:增量收录当日 extension.json(按 url 去重,已收录跳过;extension 中 content 更完整则升级旧条目)→ 重建 md。**extension.json 每个 rank 块必须含 `category` 字段**(主 Agent 汇总写入时按主题标注,如 医疗安全/自然灾害安全/影视行业/消费电子/文学与文化/医疗健康/跨境犯罪与安全/汽车行业/硬件与算力)。
+  - `topic_lib.py update --root <ROOT> --date <D>`:增量收录当日 extension.json(按 url 去重,已收录跳过;extension 中 content 更完整则升级旧条目)→ 重建 md。**extension.json 每个 rank 块必须含 `category` 字段**(主 Agent 汇总写入时按主题标注,如 医疗健康/司法与法治/外交政策与国际关系/体育产业与赛事治理)。**新增条目会自动做一次「同类体检」**:同分类内 content 相似度 ≥ `contract.LIB_SIMILAR_RATIO`(0.55)的条目对会打印告警——url 去重挡不住「同一件事被两个来源分别报道」,此处**只告警不自动合并**,是否算同一类仍由 Agent 按收敛性判断第 4 条裁定。
   - `topic_lib.py search --root <ROOT> --url <url>`:URL 查重(收录与否);
-  - `topic_lib.py search --root <ROOT> --keyword <词>`:内容/分类关键词命中;
+  - `topic_lib.py search --root <ROOT> --keyword <词>`:内容/分类关键词命中(子串匹配,只扫 `content` 与 `cat`);
   - `topic_lib.py search --root <ROOT> --cat <分类>`:列出某分类全部条目。
   - `topic_lib.py rebuild --root <ROOT>`:从 index.json 重建 md(修复用)。
-  - `topic_lib.py prune --root <ROOT> --date <D>`:**移除该日期中已不在当日 extension.json 的条目**(只影响该日期,其余日期不动)→ 重建 md。用于 subagent 按「同类型 ≤3」收敛删减条目后,保持话题库与 extension.json 一致。
+  - `topic_lib.py prune --root <ROOT>`:**全库一致性扫描**——移除 url 已不在**任何** `raw/<D>/extension.json` 里的条目(保留集合 = 所有日期 extension 的 url 并集)。条目不再记日期,故无法按日期界定范围;`--date` 已废弃、传入会被忽略。用于条目被收敛/合并后保持话题库与 extension.json 一致。
 - **使用时机(强制)**:
   - **搜索前**:每个 subagent 发散前用 `search --url/--keyword` 查重——已收录主题不重复搜索、不重复收录(用户明令「不需要重复搜索」);
   - **搜索中**:每轮结果 URL 与 index 交叉比对,已收录案例直接跳过;
-  - **完成后**:主 Agent 汇总写入 extension.json 后跑 `topic_lib.py update`,新发散点按 url 去重纳入(同一分类下同主题案例 ≤3,超出后新案例只进 `thinking` 不进条目)。
+  - **完成后**:主 Agent 汇总写入 extension.json 后依次跑 `topic_lib.py update` 与 `prune`,新发散点按 url 去重纳入(同一分类下同主题案例 ≤3,超出后新案例只进 `thinking` 不进条目)。
   - **跨 rank 复用同一 URL**:`merge_extension.py` 会告警,`topic_lib update` 按 url 去重——首个条目入库,后续同 url 条目在 content 更长时执行「内容升级」(实测 2026-09-11 出现 1 例:rank3/rank4 复用同一来源服务于不同发散点)。复用可接受,但应确认是有意为之,而非子任务重复搜索。
-- **跨日期作用**:话题库是断点续跑与多日积累的共享记忆(index.json 可被任何脚本/子任务读取),新日期的发散在前一日基础上继续补新,不重新挖旧土。
+- **跨日期作用**:话题库是断点续跑与多日积累的共享记忆(index.json 可被任何脚本/子任务读取),新日期的发散在已有条目基础上继续补新,不重新挖旧土。
 
 ### 收敛性判断(每轮检索前必做,命中即跳过本轮)
 
@@ -489,7 +491,7 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 | `verify_html.py` | **约束四自动校验**(详情页数/折叠数/翻页/入口/索引/接口摘要/拓展范围),退出码 0 即通过 | `--root --date` |
 | `fill_excel.py` | 填月度 Excel(自动建模板、情绪列下拉、截断备注、热点拓展 sheet) | `--root --date --xlsx` |
 | `gen_html.py` | 生成 HTML 展示页(原文状态标签、热点拓展块) | `--root --date --out` |
-| `topic_lib.py` | 话题库双轨维护:update 增量收录(extension→index.json,url 去重)+ search 查重(url/关键词/分类)+ rebuild 重建 md + prune 移除当日已删条目 | `update --root --date` / `search --root --url\|--keyword\|--cat` / `rebuild --root` / `prune --root --date` |
+| `topic_lib.py` | 话题库维护(定位:避免重复搜索的 database,条目只记 分类/类型/内容/链接,不记日期榜位):update 增量收录(extension→index.json,url 去重 + 同类体检告警)+ search 查重(url/关键词/分类)+ rebuild 重建 md + prune 全库一致性扫描 | `update --root --date` / `search --root --url\|--keyword\|--cat` / `rebuild --root` / `prune --root` |
 | `top2_select.py` | 可选工具:对已抓取的**全量** `answers_summary.json` 做瘦身,每问题保留「最高赞 + 最多评论」2 条,用于压缩 Agent 分析开销(现流程通常在抓取时就用 `--top N` 前置控制条数) | `--root --date [--backup]` |
 
 > **历史说明**:早期版本曾用 `api_fetch.py`(API 直拉 + top2 = 最高赞 + 最多评论)作为抓取首选。其职能已由 `question_fetch.py` **完全取代**,且后者更强(并集召回 web ∪ search、覆盖度标注 `total_answers/coverage/source`、Question/Article/Answer 三类条目适配),该脚本已移除;如需查阅可看 git 历史。**现行流程只有一条抓取链**:`run.py`(关键词搜索召回,作兜底)→ `question_fetch.py`(问题维度并集,主数据源)。

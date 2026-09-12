@@ -58,6 +58,11 @@ FILE_COOKIE = "cookies.txt"            # 网页登录凭证(供复用)
 LIB_DIRNAME = "话题库"                  # <root>/话题库/
 LIB_INDEX = "index.json"               # 机读索引(唯一键去重)
 LIB_MD = "话题库.md"                    # 人读视图(由 index 重建,勿手改)
+# 话题库条目字段(2026-09-12 用户要求): 只留「分类/类型/内容/链接」。
+# 它是「避免重复搜索的 database」, 不是运行日志 —— date/rank 是当日榜位与收录时间,
+# 对「这条线索是否已经查过」没有任何判定价值, 反而让同一条事实按日期反复出现。
+LIB_FIELDS = ("cat", "type", "content", "url")
+LIB_SIMILAR_RATIO = 0.55               # 入库时「疑似同类」相似度阈值(仅告警, 不自动合并)
 
 REPORT_TITLE = "知乎热榜跟进"           # 交付物名称前缀(换主题改这一处)
 XLSX_PREFIX = "跟进excel"               # 月度表格名称前缀
