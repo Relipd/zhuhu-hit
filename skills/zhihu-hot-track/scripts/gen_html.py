@@ -44,6 +44,8 @@ main.idx { max-width: 1720px; margin: 20px auto; padding: 0 20px;
   padding: 2px 9px; font-size: 13px; font-variant-numeric: tabular-nums; }
 .ext-tag { background: var(--gold); color: #fff; font-size: 10.5px; border-radius: 10px;
   padding: 1px 7px; font-weight: 700; }
+.add-tag { background: #2f6f8f; color: #fff; font-size: 10.5px; border-radius: 10px;
+  padding: 1px 7px; font-weight: 700; margin-left: 5px; }
 .card-title { font-size: 14.5px; font-weight: 700; line-height: 1.45;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   margin-bottom: 8px; }
@@ -209,7 +211,7 @@ def main():
         # 覆盖度: 让读者知道"抓到的 5 条"是该问题的多少(见 SKILL.md 热点拓展/数据源说明)
         cov_html = f"<span>覆盖 {m}/{s['total_answers']}</span>" if s.get("total_answers") else ""
         cards.append(f"""<a class="card-link" href="{contract.page_name(rank)}">
-<div class="card-top"><span class="rank">#{rank}</span>{'<span class="ext-tag">扩展</span>' if is_ext else ''}</div>
+<div class="card-top"><span class="rank">#{rank}</span>{'<span class="ext-tag">扩展</span>' if is_ext else ''}{'<span class="add-tag">追加</span>' if s.get('extra') else ''}</div>
 <div class="card-title">{html.escape(s['title'])}</div>
 <div class="card-meta"><span>最高赞 <b>{top}</b></span><span>{m} 回答</span>{cov_html}</div>
 {mbar_html(jc_q, m)}</a>""")
@@ -366,7 +368,7 @@ def main():
 {ext_html(rank)}
 </div>
 {pager}
-</main><footer>生成于 {args.date} · 四维分析基于回答原文归纳 · 热点拓展仅覆盖热榜前 10</footer></body></html>"""
+</main><footer>生成于 {args.date} · 四维分析基于回答原文归纳 · {'本页为单问题追加追踪（非榜单条目）' if s.get('extra') else '热点拓展仅覆盖热榜前 10'}</footer></body></html>"""
         # 详情页目录跟随 --out 推导出的 pages_dir(不直接用契约默认目录, 以兼容自定义 --out)
         open(os.path.join(pages_dir, contract.page_name(rank)), "w", encoding="utf-8").write(page)
 

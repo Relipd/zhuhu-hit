@@ -45,6 +45,7 @@
     (它们只处理"榜单条目 + 回答 + 分析 + 拓展"这套与平台无关的结构)。
 """
 import os
+import re
 
 # ────────────────────────────── 目录与文件名 ──────────────────────────────
 
@@ -222,6 +223,16 @@ HTML_EXT_CLAIM_PREFIX = "想法"          # 链式渲染时的想法前缀
 def day_dir(root, date):
     """<root>/raw/<date>/"""
     return os.path.join(root, RAW_DIRNAME, date)
+
+
+def canon_url(u):
+    """规范化链接: 去掉查询串与锚点, 去尾部斜杠。
+
+    实测(2026-09-12): 用户贴的问题链接常带跟踪参数(`?share_code=...&utm_psn=...`),
+    直接入库会一路带到 answers_summary / Excel / HTML。**入库与去重都用规范化后的链接**。
+    (话题库的 norm_url 与本函数同源, 不再各写一份)
+    """
+    return re.sub(r"[?#].*$", "", (u or "").strip()).rstrip("/")
 
 
 def path_hot(root, date):

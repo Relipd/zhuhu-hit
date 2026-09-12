@@ -216,6 +216,11 @@ python scripts/question_add.py --root %ROOT% --date %D% --url <问题/回答/专
 
 它做四件事:① 解析链接 → id 与标题(**标题取自 answers 接口每条结果自带的 `question.title`** —— 单问题元数据接口 `api/v4/questions/{qid}` 实测 403);② 分配 rank = **当日现有最大值 + 1**(榜单 20 条时即 21、22…,可用 `--rank` 指定);③ 抓取该问题高赞回答并**并入 `answers_summary.json`**(条目标 `extra: true`);④ 登记 `raw/<D>/extra_questions.json`。**回答链接会自动折算到它所属的问题**(追踪问题才有拓展价值)。
 
+**顺手做掉的三件事(2026-09-12 实测摩擦)**:
+- **链接自动规范化**:入参先过 `contract.canon_url()`(去掉 `?share_code=…&utm_psn=…` 等跟踪参数),避免跟踪串一路带进 Excel/HTML;话题库去重键与本函数同源;
+- **自动生成派发提示词**:用 `scripts/prompt_swarm.md` 模板填好 rank/标题/URL/受控分类,写到 `ext_search/<D>/rank_<N>/PROMPT.md`,直接拿去派 subagent —— 免去每次手写约 1.2k token 的提示词(`--emit-prompt <path>` 可指定输出位置);
+- **跨日期重复追踪检查**:扫其他日期的 `extra_questions.json`,同一问题已追踪过会告警(避免白跑一次 Swarm);确认要重复追踪加 `--no-cross-day-check`。
+
 **编号与聚合规则**:
 - **rank 21+ 追加**,不另开 id 空间 —— `analysis.json` / `extension.json` / `ext_search/<D>/rank_<N>/` / Excel 排名列 / HTML `q<N>.html` 全部照旧;Excel 备注会标「追加追踪(非榜单条目)」以示区别;
 - **不需要当天先跑榜单**:`hot.json` 是**可选输入**(缺失=空列表);"条目数的唯一来源"是 `answers_summary.json`(`verify_html` 的页数/卡片数基准已从 hot 改为它);
@@ -531,7 +536,7 @@ question_add ─→ Agent 写四维分析(analysis.json 的该 rank)
 - Excel「热点拓展」sheet:`日期 | 排名 | 问题标题 | 扩展类型 | 扩展内容 | 来源链接 | 备注 | 发散想法 | 关系`;链式渲染会额外产出「**想法**」与「**落点**」两类行(扩展类型列标出),证据行的「关系」列给出 印证/反驳/边界。**有链接就附上**:想法行的来源链接列是该想法的出处回答(可点击,备注列写明「回答 N·M 赞」),落点行的来源链接列列出本链全部来源。末两列为新增,追加在末尾以保证历史日期的行不错位。最新日期块在最上,跨日期自动累积。
 - 范围硬约束:**只处理热榜前 10**,第 11-20 名不扩展(主流程四维分析照常覆盖全部 20)。
 
-## 踩过的坑(1-40,勿重蹈)
+## 踩过的坑(1-42,勿重蹈)
 
 1. **PS 5.1 管道换行 → AUTH_INVALID**:`"secret" | zhihu-cli auth set --secret-stdin` 会追加换行导致服务端校验失败(Secret 本身有效)。用 `cmd /c "echo|set /p=<secret>|<cli> auth set --secret-stdin"` 无换行传入。
 2. **无 BOM UTF-8 ps1 在 PS 5.1 报语法错误**:官方脚本(run.ps1/setup.ps1)含中文注释,需转存为带 BOM 的 UTF-8 才能被 PS 5.1 解析。
@@ -576,6 +581,8 @@ question_add ─→ Agent 写四维分析(analysis.json 的该 rank)
 39. **复核字段必须同时落到 `items` 与 `chains[].evidence`**:`verify_ext.py` 首次实现只给展平的 `items` 打标,而 Excel/HTML 渲染读的是 `chains[].evidence`——JSON 往返后二者是**不同对象**,结果交付物上等级标签数为 0,而话题库(读 items)却有等级。凡是"后处理打标"都要显式传播到全部引用位置。**另**:复核已并入 `merge_extension`(写出后自动调用),不再存在忘记执行的失败点;单独补跑用 `verify_ext.py` 即可。
 40. **单问题元数据接口 403,标题要从 answers 结果里取**:`api/v4/questions/{qid}` 直接请求实测 **403**(带 Cookie、带问题页 Referer、加 `include=title` 都不行);而 `api/v4/questions/{qid}/answers` 的**每条结果自带 `question.title`**(2026-09-12 实测)。`question_fetch.fetch_question` 因此改为返回 `(answers, total, title)`,`question_add.py` 不再单独请求标题接口。另:`kind_of` 把回答链接识别为 `answer`,追加追踪时会**折算到它所属的问题**(追踪问题才有拓展价值)。
 
+41. **重跑 run.py / question_fetch.py 会静默删掉追加条目(数据丢失)**:这两个脚本都按 hot.json 重建 answers_summary.json,而追加问题(rank 21+)**不在 hot.json 里**——实测若在追加后再跑一次任一脚本,rank 21 会被无声删除(它已在 analysis.json 与 extension.json 里,于是 check 会以「analysis 多余」形态暴露,或直接静默丢数据)。现两者都会**保留 extra=true 的条目**并打印 [info] 保留 N 条单问题追加条目。**凡"按榜单重建当日数据"的脚本都要保留 extra 条目**,这是新增脚本的检查项。
+42. **分享链接带跟踪参数,会一路带到交付物**:用户从 App 复制的问题链接形如 `/question/2081001656066504241?share_code=rASK3M7YnZl9&utm_psn=2082191529167401174`。直接入库会让 Excel/HTML 里的"原问题链接"始终拖着一串跟踪参数(话题库因按 url 去重会隐式规范化,所以更隐蔽——库里去重了,交付物却没去)。现统一 `contract.canon_url()`(去 `?/#` 之后内容并去尾斜杠),`question_add` 入库前即规范化,`topic_lib.norm_url` 与之同源。
 
 ## 脚本清单(skill/scripts/,全流程通用)
 
@@ -585,7 +592,7 @@ question_add ─→ Agent 写四维分析(analysis.json 的该 rank)
 | `zhihu_env.py` | **基础技术栈适配层**:统一解析 CLI 路径(`ZHIHU_CLI` → `ZHIHU_CLI_HOME` → 平台默认 → 兜底问 zhihu skill 的 status)与凭证库状态;被所有业务脚本 import | 作为模块:`require_cli()` / `diagnose()` / `keychain_present()` / `skill_status()` |
 | `doctor.py` | **环境与数据自检**:运行时/脚本完整性/基础栈(CLI+凭证+skill 版本)/ROOT/当日数据;`--discover` 自动发现候选 ROOT | `--root --date --discover --json` |
 | `run.py` | 热榜 + 变体搜索 + 合并去重(关键词召回, 作兜底数据源) | `--root --date --limit --variants --resume` |
-| `question_add.py` | **单问题追加追踪**:把单独搜的一个问题注册成当日追加条目(rank 接在榜单之后)、抓高赞回答并入 answers_summary、登记 extra_questions.json;hot.json 缺失也能用 | `--root --date --url [--top] [--pages] [--rank] [--dry-run]` |
+| `question_add.py` | **单问题追加追踪**:把单独搜的一个问题注册成当日追加条目(rank 接在榜单之后)、抓高赞回答并入 answers_summary、登记 extra_questions.json、**自动生成 subagent 提示词**(prompt_swarm.md 模板);链接自动规范化、跨日期重复追踪会告警;hot.json 缺失也能用 | `--root --date --url [--top] [--pages] [--rank] [--emit-prompt] [--no-cross-day-check] [--dry-run]` |
 | `question_fetch.py` | **问题维度抓取**(主数据源):网页接口按赞取每问题最热 N 条, 与搜索召回取**并集**, 适配 Question/Article/Answer 三类条目, 写入 `total_answers`/`coverage`/`source`; 请求级退避重试(防瞬时 403 被静默降级) | `--root --date --top 5 --pages 3 --out --no-merge --retry --backoff` |
 | `fulltext.py` | 回答全文补全 + 截断检测(每条自动重试 3 次、失败原因写入 `error`;`--cookie` 解锁全文) | `--root --date --delay --retry --backoff --force --cookie` |
 | `search_many.py` | 批量发散搜索(热点拓展用,queries.json 驱动) | `queries.json outdir --db --delay --count` |

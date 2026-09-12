@@ -126,6 +126,19 @@ def main():
                         "summary": it.get("Summary", ""), "answers": answers[:10]})
         print(f"[{i:02d}] {len(answers)} 条回答(取前10) 最高赞={answers[0]['likes'] if answers else '-'}")
     ans_out = contract.path_answers(args.root, args.date)
+    # 保留单问题追加追踪(extra=true)的条目: 本脚本只重建榜单条目,
+    # 否则重跑会把追加的 rank 21+ 静默删除(2026-09-12 实测隐患)。
+    if os.path.exists(ans_out):
+        try:
+            old = json.load(open(ans_out, encoding="utf-8"))
+            extras = [s for s in old if s.get("extra")]
+            if extras:
+                summary.extend(extras)
+                summary.sort(key=lambda s: int(s["rank"]))
+                print(f"[info] 保留 {len(extras)} 条单问题追加条目: "
+                      f"rank {[s['rank'] for s in extras]}")
+        except Exception as e:
+            print(f"[WARN] 读取既有 answers_summary 失败({e}), 追加条目可能丢失")
     json.dump(summary, open(ans_out, "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
     total = sum(len(s["answers"]) for s in summary)

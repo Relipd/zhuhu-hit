@@ -47,6 +47,36 @@ def load_json(path, default):
         return json.load(f)
 
 
+def find_tracked_days(root, url, exclude_date):
+    """同一问题在**其他日期**是否已登记过(避免跨天重复追踪、白跑一次 Swarm)。"""
+    hits = []
+    raw = os.path.join(root, contract.RAW_DIRNAME)
+    for d in sorted(os.listdir(raw)) if os.path.isdir(raw) else []:
+        if d == exclude_date:
+            continue
+        p = contract.path_extra(root, d)
+        for it in (load_json(p, {}) or {}).get("items", []) if os.path.exists(p) else []:
+            if contract.canon_url(it.get("url", "")) == url:
+                hits.append((d, it.get("rank")))
+    return hits
+
+
+def emit_prompt(root, date, rank, title, url):
+    """用 scripts/prompt_swarm.md 模板生成派发提示词 —— 免去每次手写(约 1.2k token/次)。"""
+    tpl_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_swarm.md")
+    with io.open(tpl_path, "r", encoding="utf-8") as f:
+        tpl = f.read()
+    txt = tpl.format(py=sys.executable, scripts=os.path.dirname(os.path.abspath(__file__)),
+                     root=root, date=date, rank=rank, title=title, url=url,
+                     cats=" / ".join(contract.LIB_CATS))
+    out_dir = os.path.join(root, "ext_search", date, "rank_%d" % rank)
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, "PROMPT.md")
+    with io.open(out, "w", encoding="utf-8") as f:
+        f.write(txt)
+    return out
+
+
 
 def main():
     ap = argparse.ArgumentParser(description="单问题追加追踪(聚合进当日交付物)")
@@ -59,9 +89,13 @@ def main():
     ap.add_argument("--delay", type=float, default=1.5)
     ap.add_argument("--rank", type=int, default=None, help="指定 rank(默认接在当日最大值之后)")
     ap.add_argument("--dry-run", action="store_true", help="只解析与分配 rank, 不抓取不落盘")
+    ap.add_argument("--emit-prompt", nargs="?", const="", default=None,
+                    help="生成该 rank 的 subagent 提示词(默认写 ext_search/<D>/rank_<N>/PROMPT.md)")
+    ap.add_argument("--no-cross-day-check", action="store_true",
+                    help="跳过跨日期重复追踪检查")
     args = ap.parse_args()
 
-    url = args.url.strip()
+    url = contract.canon_url(args.url)      # 去掉 ?share_code=/utm_* 等跟踪参数, 入库即规范化
     kind = qf.kind_of(url)
     if not kind or kind == "unknown":
         sys.exit("[FAIL] 无法识别链接类型(支持 问题/回答/专栏): %s" % url)
@@ -95,6 +129,12 @@ def main():
         print("dry-run: kind=%s id=%s 分配 rank=%d(当日已有 %d 条)"
               % (kind, qid, rank, len(summary)))
         return 0
+
+    if not args.no_cross_day_check:
+        prev = find_tracked_days(args.root, url, args.date)
+        if prev:
+            print("[WARN] 该问题在其他日期已追踪过: %s(如需重复追踪请加 --no-cross-day-check)"
+                  % ", ".join("%s rank %s" % (d, r) for d, r in prev))
 
     cookie, cookie_path = qf.load_cookie(args.root, args.date)
     print("[info] cookie: " + (f"复用 {cookie_path}(不验证、不删除)" if cookie
@@ -135,11 +175,14 @@ def main():
     cov = ("覆盖 %d/%d" % (len(answers), total)) if total else "覆盖 n/a"
     print("[OK] 追加 rank %d: %s" % (rank, title))
     print("     回答 %d 条 | %s | 来源 %s | 登记 extra_questions.json" % (len(answers), cov, src))
+    prompt_path = emit_prompt(args.root, args.date, rank, title, url)
+    print("     已生成派发提示词: %s" % prompt_path)
+    if args.emit_prompt is not None:
+        print("     (--emit-prompt 指定路径: %s)" % args.emit_prompt)
     print("\n下一步(该问题按规则**默认跑拓展**):")
     print("   1) Agent 依据 raw/%s/answers_summary.json 的 rank %d 写四维分析到 analysis.json"
           % (args.date, rank))
-    print("   2) 建目录 ext_search/%s/rank_%d/ 并派 1 个 subagent 产出 chains(链式 schema)"
-          % (args.date, rank))
+    print("   2) 把 %s 的内容作为 prompt 派 1 个 subagent 产出 chains" % prompt_path)
     print("   3) python scripts/merge_extension.py --root %s --date %s  (汇总+自动复核)"
           % (args.root, args.date))
     print("   4) python scripts/topic_lib.py update --root %s --date %s  → fill_excel → gen_html → verify_html"

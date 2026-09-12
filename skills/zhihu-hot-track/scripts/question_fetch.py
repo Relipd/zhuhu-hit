@@ -300,6 +300,19 @@ def main():
         print(f"  #{i:02d} {rec['source']:<15} 取 {len(rec['answers'])}/{n_total} 条 (覆盖 {cov}) 最高赞={top_like}")
         time.sleep(args.delay)
 
+    # 保留单问题追加追踪(extra=true)的条目: 本脚本只按 hot.json 重建榜单条目,
+    # 若不保留, 重跑一次就会把追加的 rank 21+ **静默删除**(2026-09-12 实测隐患)。
+    extras = [s for s in old.values() if s.get("extra")]
+    if extras:
+        clash = [s["rank"] for s in extras if any(int(x["rank"]) == int(s["rank"]) for x in summary)]
+        if clash:
+            print("[WARN] 追加条目 rank %s 与榜单条目冲突, 已跳过保留(请检查 extra_questions.json)" % clash)
+            extras = [s for s in extras if int(s["rank"]) not in clash]
+        summary.extend(extras)
+        summary.sort(key=lambda s: int(s["rank"]))
+        print("[info] 保留 %d 条单问题追加条目: rank %s"
+              % (len(extras), [s["rank"] for s in extras]))
+
     with io.open(out_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=1)
 

@@ -59,7 +59,8 @@ def save_lib(path, items):
 
 
 def norm_url(u):
-    return re.sub(r"\?.*$", "", u or "").rstrip("/")
+    """去重键: 与 contract.canon_url 同源(去掉 ?/# 之后内容并去尾斜杠)。"""
+    return contract.canon_url(u)
 
 
 def cat_norm(raw):

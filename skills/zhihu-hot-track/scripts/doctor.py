@@ -38,6 +38,7 @@ import zhihu_env  # noqa: E402
 REQUIRED_SCRIPTS = ["contract.py", "run.py", "question_fetch.py", "question_add.py", "fulltext.py", "search_many.py",
                     "check.py", "merge_extension.py", "verify_ext.py", "verify_html.py",
                     "fill_excel.py", "gen_html.py", "topic_lib.py", "zhihu_env.py"]
+REQUIRED_FILES = ["prompt_swarm.md"]      # subagent 提示词模板(question_add --emit-prompt 依赖)
 SKIP_DIRS = {"windows", "$recycle.bin", "system volume information", "node_modules",
              "appdata", "temp", "tmp", ".git", ".cache", "__pycache__",
              "program files", "program files (x86)", "programdata", "perflogs"}
@@ -165,10 +166,11 @@ def check_basestack(rep):
 def check_scripts(rep):
     here = os.path.dirname(os.path.abspath(__file__))
     missing = [s for s in REQUIRED_SCRIPTS if not os.path.exists(os.path.join(here, s))]
+    missing += [f for f in REQUIRED_FILES if not os.path.exists(os.path.join(here, f))]
     if missing:
         rep.fail("skill 脚本完整性", "缺失: " + ", ".join(missing))
     else:
-        rep.ok("skill 脚本完整性", f"{len(REQUIRED_SCRIPTS)} 个脚本齐备")
+        rep.ok("skill 脚本完整性", f"{len(REQUIRED_SCRIPTS)} 个脚本 + {len(REQUIRED_FILES)} 个模板齐备")
 
     # 契约层自检:路径构造必须与常量自洽(改常量时若忘了改函数, 这里先炸)
     probe = contract.day_dir("X", "2026-09-12")
