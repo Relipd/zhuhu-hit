@@ -145,9 +145,40 @@ def normalize_chains(chains, n, warnings, errors):
                 v["relation"] = contract.EXT_RELATION_DEFAULT
                 warnings.append(f"rank_{n}: chains[{ci}].evidence[{i}] 未标 relation, 默认「{v['relation']}」")
             v["claim"] = claim
+            if norm_src:
+                v["claim_source_url"] = norm_src["url"]      # 透传给展平后的证据, 供话题库入库
             evs.append(v)
         norm.append({"claim": claim, "takeaway": takeaway, "evidence": evs, "source": norm_src})
     return norm
+
+
+def normalize_dropped(dropped, n, warnings, errors):
+    """未采用但值得记录: 被「同类案例只取一条」收敛掉的案例。
+
+    不进 items(因此不进 Excel/HTML), 但会写进 extension.json 的 `dropped`, 由
+    topic_lib 以 adopted=false 入库 —— 这样后续发散查重能命中「已知同类、已判定不采用」。
+    """
+    out = []
+    for i, it in enumerate(dropped or [], 1):
+        if not isinstance(it, dict):
+            errors.append(f"rank_{n}: dropped[{i}] 不是对象")
+            continue
+        missing = [k for k in ("type", "content", "url") if not it.get(k)]
+        if missing:
+            errors.append(f"rank_{n}: dropped[{i}] 缺字段 {missing}")
+            continue
+        if it.get("type") not in TYPES:
+            errors.append(f"rank_{n}: dropped[{i}] type 非法: {it.get('type')!r}")
+            continue
+        if not str(it.get("url") or "").startswith("http"):
+            errors.append(f"rank_{n}: dropped[{i}] url 异常: {it.get('url')!r}")
+            continue
+        if not it.get("reason"):
+            warnings.append(f"rank_{n}: dropped[{i}] 缺 reason(说明为何归为同类而不单列)")
+        out.append({"type": it["type"], "content": str(it["content"]),
+                    "url": str(it["url"]), "note": str(it.get("note") or ""),
+                    "reason": str(it.get("reason") or "")})
+    return out
 
 
 def normalize(data, n, warnings, errors):
@@ -201,6 +232,7 @@ def normalize(data, n, warnings, errors):
         "url": data.get("url", ""),
         "chains": chains,
         "items": norm_items,
+        "dropped": normalize_dropped(data.get("dropped"), n, warnings, errors),
         "thinking": thinking,
         "category": data.get("category") or "未分类",
     }
@@ -238,7 +270,7 @@ def main():
             continue
         block = normalize(data, n, warnings, errors)
         ext[str(block["rank"] if isinstance(block["rank"], int) else n)] = block
-        for it in block["items"]:
+        for it in list(block["items"]) + list(block.get("dropped") or []):
             url_owner.setdefault(it["url"], []).append(f"rank{n}")
 
     dups = {u: rs for u, rs in url_owner.items() if len(rs) > 1}
@@ -268,7 +300,8 @@ def main():
         tc = {}
         for it in b["items"]:
             tc[it["type"]] = tc.get(it["type"], 0) + 1
-        stats.append((k, len(b["items"]), tc, b["category"], bool(b["thinking"]), len(b.get("chains") or [])))
+        stats.append((k, len(b["items"]), tc, b["category"], bool(b["thinking"]),
+                      len(b.get("chains") or []), len(b.get("dropped") or [])))
 
     if warnings and not args.quiet:
         print(f"[WARN] {len(warnings)} 条警告:")
@@ -290,11 +323,13 @@ def main():
 
     total = sum(len(b["items"]) for b in ext.values())
     n_chain = sum(len(b.get("chains") or []) for b in ext.values())
+    n_drop = sum(len(b.get("dropped") or []) for b in ext.values())
     print(f"[OK] extension.json 写出: {out}")
     print(f"     {len(ext)} 个 rank, {total} 条 items, {n_chain} 条发散链, "
-          f"{len(url_owner)} 个唯一 URL, {len(dups)} 条跨 rank 复用")
-    for k, cnt, tc, cat, has_th, nch in stats:
-        print(f"     rank{k}: {nch} 链 / {cnt} 条证据 {tc} | {cat} | thinking {'有' if has_th else '缺'}")
+          f"{n_drop} 条未采用(adopted=false), {len(url_owner)} 个唯一 URL, {len(dups)} 条跨 rank 复用")
+    for k, cnt, tc, cat, has_th, nch, ndp in stats:
+        print(f"     rank{k}: {nch} 链 / {cnt} 条证据 {tc} | 未采用 {ndp} | {cat} | "
+              f"thinking {'有' if has_th else '缺'}")
     print("     下一步: python scripts/topic_lib.py update --root <ROOT> --date <D>")
 
 

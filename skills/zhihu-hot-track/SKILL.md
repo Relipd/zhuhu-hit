@@ -346,10 +346,15 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
       "source": {"answer_index": 3, "likes": 294, "url": "该想法提炼自的那条回答的链接"},
       "evidence": [
         {"relation": "印证", "type": "案例", "content": "要点提炼(60-300字，含数字/时间/主体)",
-         "url": "真实来源链接", "note": "这条证据说明了什么、为什么标这个 relation"}
+         "url": "真实来源链接", "note": "这条证据说明了什么、为什么标这个 relation",
+         "entities": ["上海疾控", "2025"]}
       ],
       "takeaway": "落点：这条链最后说明了什么（结论，不是复述证据）"
     }
+  ],
+  "dropped": [
+    {"type": "案例", "content": "被收敛掉的同类案例要点(60-300字)", "url": "真实来源链接",
+     "note": "与已采用条目同属哪一类", "reason": "为何归为同类而不单列"}
   ],
   "thinking": "发散思考过程(为何立这些想法、检索路径、收敛依据、被舍去的同类案例)"
 }
@@ -357,6 +362,8 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 
 - `chains` **必填**且非空;每条链 `claim` 与 `takeaway` 都要写(缺 takeaway 会被 merge 告警、HTML 少一行结论);
 - `source`(想法出处)**可选但推荐**:`{"answer_index": N, "likes": N, "url": "http..."}`,指该想法提炼自哪条回答——`url` 从 `answers_summary.json` 该 rank 的 answers 里取,不要手写;格式不对 merge 会告警并忽略;
+- `evidence[].entities`(可选但推荐):2–4 个主体锚点(机构/人物/案件名),入库后可用 `search --entity` 按主体查「这家公司/这个人还出现过几次」;
+- `dropped`(**可选**):被「同类案例只取一条」收敛掉的同类案例。**不进 items、不进 Excel/HTML**,但会被 `topic_lib` 以 `adopted=false` 入库,使后续发散查重能直接命中「已知同类、已判定不采用」。每条需 `type/content/url`,建议带 `note` 与 `reason`;
 - `evidence` 每条必须带 `relation`(不写会被 merge 默认成「印证」并告警);
 - 同一 `type`(案例/人物/链路)**≤3 条**(按**该 rank 全部证据**计,不是每条链各算);
 - 旧格式(顶层 `items` 扁平列表)**仍被兼容**,但会渲染成"无想法的证据堆",交付物可读性差,新产出不再使用;
@@ -372,18 +379,26 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 - **维度区隔而非父子树**:`type`(案例/人物/链路,3 个稳定取值)是**全局唯一的一级索引**;`cat`(主题,19 个自由文本值、已出现近义分叉如「消费电子」vs「半导体与消费电子」)只作**二级主题标签**,仅用于展示分组。理由:同一 `type` 在每个 `cat` 下都会重复出现,若把它做成 `cat` 的子节点,这一个维度会被复制 19 份(即"多次区隔");而筛选与匹配需要的是「跨主题取全部案例」这种能力。父子结构只出现在人读视图里。
 - **保留时间维度,但不用时间做区隔**:`date` = **首次收录日期**,只是条目属性。一条 url 只一行,多日重复出现不重新入库、也不覆盖既有 date(因此时间不会把同一条事实切成多份)。
 
-**双轨结构**:
-- **`<ROOT>/话题库/index.json`(机读索引,唯一数据源)**:`{"items": [{"date","type","cat","content","url"}]}`(字段与分组维度由 `contract.LIB_FIELDS` / `LIB_GROUP_FIELD` 定义);url 归一化(砍掉 `?` 之后全部查询参数 + 去尾部 `/`)为**唯一键去重**。旧条目字段会在 `update` 时自动规整,缺失的 `date` 由 `backfill_dates()` 扫所有 `raw/<D>/extension.json` 回填为最早出现的日期(实测 139 条:76 条 09-11 / 63 条 09-12)。
-- **`<ROOT>/话题库/话题库.md`(人读展示)**:由 index.json 重建。**一级按 `type`**(`## 案例（57）`),**二级按 `cat`**(`### 家居与居住（3）`),行 `| 日期 | 内容要点 | 来源 url |`;文件头给出总量与各 type 计数。
+**双轨结构(+1 加速索引)**:
+- **`<ROOT>/话题库/index.json`(机读索引,唯一数据源)**:`{"schema": 2, "items": [...]}`(字段与分组维度由 `contract.LIB_*` 定义)。条目字段:
+  | 字段 | 说明 |
+  |---|---|
+  | `date` / `last_seen` | 首次收录 / 最近命中日期(**只是属性, 不分区**) |
+  | `type` | **一级维度**(案例/人物/链路)—— 全局唯一索引, 筛选与匹配都先走它 |
+  | `cat` | 二级主题标签, **走受控词表** `contract.LIB_CATS`;自由文本经 `LIB_CAT_SYNONYMS` 映射, 未命中归「其他」并告警 |
+  | `content` / `url` | 要点提炼 / 来源链接(url 归一化后为**唯一键去重**) |
+  | `entities` | 主体锚点(机构/人物/案件名), 供 `--entity` 检索; 由 subagent 提供, 历史条目为空 |
+  | `adopted` | `true`=已采用;`false`=**未采用但值得记录**(被「同类案例只取一条」收敛掉的案例) |
+  | `claim` / `relation` / `claim_source_url` | 论证层:该证据印证/反驳/边界哪个想法、想法出自哪条回答 |
+- **`<ROOT>/话题库/话题库.md`(人读展示,派生物)**:一级按 `type`(`## 案例（59）`)、二级按 `cat`(`### 医疗健康（13）`),行 `| 收录 | 最近 | 内容要点 | 来源 url |`;未采用条目带「（未采用，仅备查）」前缀。
+- **`<ROOT>/话题库/index.sqlite`(加速索引,派生物)**:由 index.json 重建;`entries` 表 + `(type)/(cat)/(date,last_seen)` 索引 + **FTS5(trigram)** 全文表。**必须用 trigram**:默认 unicode61 会把整段中文当一个词,「洗衣机」查不到「家用洗衣机」(实测 0 命中)。`search` 会自动检测过期并重建,sqlite 缺失/FTS5 不可用时退化为 Python/LIKE 扫描。
 - **维护脚本 `scripts/topic_lib.py`(全流程强制使用,禁止手改 md)**:
-  - `topic_lib.py update --root <ROOT> --date <D>`:增量收录当日 extension.json(按 url 去重,已收录跳过;extension 中 content 更完整则升级旧条目;新条目 `date` 记为该日)→ 规整字段、回填缺失日期 → 重建 md。**extension.json 每个 rank 块必须含 `category` 字段**(主 Agent 汇总时按主题标注)。**新增条目会自动做一次「同类体检」**:同 **type** 内 content 相似度 ≥ `contract.LIB_SIMILAR_RATIO`(0.55)的条目对打印告警——url 去重挡不住「同一件事被两个来源分别报道」;**只告警不自动合并**,是否算同一类仍由 Agent 按收敛性判断第 4 条裁定。按 type 而非 cat 比对,因为 cat 分叉会漏。
-  - `topic_lib.py search --root <ROOT> --url <url>`:URL 查重(收录与否);
-  - `topic_lib.py search --root <ROOT> --type 案例|人物|链路`:按一级维度筛选(推荐的首选筛选方式);
-  - `topic_lib.py search --root <ROOT> --cat <分类>`:按主题标签筛选;
-  - `topic_lib.py search --root <ROOT> --since <D> --until <D>`:按首次收录日期区间筛选;
-  - `topic_lib.py search --root <ROOT> --keyword <词>`:内容/分类关键词命中(子串匹配,只扫 `content` 与 `cat`;上述条件可自由组合,输出附带命中数的 type 分布);
-  - `topic_lib.py rebuild --root <ROOT>`:从 index.json 重建 md(修复用)。
-  - `topic_lib.py prune --root <ROOT>`:**全库一致性扫描**——移除 url 已不在**任何** `raw/<D>/extension.json` 里的条目(保留集合 = 所有日期 extension 的 url 并集)。`--date` 已废弃、传入会被忽略。
+  - `update --root <ROOT> --date <D>`:增量收录当日 extension.json 的 `items`(adopted=true)与 `dropped`(adopted=false)→ cat 归一化 → 字段规整(schema 版本 +1 时自动迁) → 回填 `date/last_seen/claim/relation/entities` → **同类体检** → 原子写 index.json + 重建 md 与 sqlite。
+  - `search --root <ROOT> [--url U] [--type T] [--cat C] [--entity E] [--keyword K] [--since D] [--until D] [--json] [--adopted-only]`:条件可自由组合;`--json` 输出机读结果;`--adopted-only` 排除未采用条目。
+  - `rebuild --root <ROOT>`:从 index.json 重建 md;`reindex --root <ROOT>`:重建 sqlite。
+  - `prune --root <ROOT>`:**全库一致性扫描**——移除 url 已不在**任何** `raw/<D>/extension.json`(含 `dropped`)里的条目(保留集合 = 所有日期 extension 的 url 并集)。`--date` 已废弃、传入会被忽略。
+- **写库安全**:`update`/`prune` 是"读—改—整体重写",现改为**先写 `.tmp` 再 `os.replace` 原子替换** —— 写一半崩掉不会毁库。并发入库仍需避免(当前流程 update 只在主 Agent 汇总后单点执行)。
+- **同类体检的预筛**:`similar_pairs` 先算 3-gram 集合 Jaccard(`contract.LIB_SHINGLE_JACCARD`=0.30),低于阈值直接跳过,再对候选算 `difflib` 序列相似度(阈值 0.55)——避免 O(新增×存量) 次全对比在库里上千条时拖垮 update。
 - **使用时机(强制)**:
   - **搜索前**:每个 subagent 发散前用 `search --url/--keyword` 查重——已收录主题不重复搜索、不重复收录(用户明令「不需要重复搜索」);
   - **搜索中**:每轮结果 URL 与 index 交叉比对,已收录案例直接跳过;
@@ -442,7 +457,7 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 - Excel「热点拓展」sheet:`日期 | 排名 | 问题标题 | 扩展类型 | 扩展内容 | 来源链接 | 备注 | 发散想法 | 关系`;链式渲染会额外产出「**想法**」与「**落点**」两类行(扩展类型列标出),证据行的「关系」列给出 印证/反驳/边界。**有链接就附上**:想法行的来源链接列是该想法的出处回答(可点击,备注列写明「回答 N·M 赞」),落点行的来源链接列列出本链全部来源。末两列为新增,追加在末尾以保证历史日期的行不错位。最新日期块在最上,跨日期自动累积。
 - 范围硬约束:**只处理热榜前 10**,第 11-20 名不扩展(主流程四维分析照常覆盖全部 20)。
 
-## 踩过的坑(1-35,勿重蹈)
+## 踩过的坑(1-37,勿重蹈)
 
 1. **PS 5.1 管道换行 → AUTH_INVALID**:`"secret" | zhihu-cli auth set --secret-stdin` 会追加换行导致服务端校验失败(Secret 本身有效)。用 `cmd /c "echo|set /p=<secret>|<cli> auth set --secret-stdin"` 无换行传入。
 2. **无 BOM UTF-8 ps1 在 PS 5.1 报语法错误**:官方脚本(run.ps1/setup.ps1)含中文注释,需转存为带 BOM 的 UTF-8 才能被 PS 5.1 解析。
@@ -479,6 +494,8 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 33. **问题维度接口的瞬时 403 会被静默兜底,连覆盖率一起丢**:`question_fetch.py` 连续请求 20 个问题 × 3 页后,知乎网页接口会偶发 403(限流),而**同一 Cookie 单独请求同一问题立刻返回 200**(2026-09-12 实测:rank5 记 HTTP 403 并降级为 `search_fallback`,该问题因此既丢主数据源、也没了 `total_answers/coverage`——覆盖率标注的依据)。现已在**请求单一入口** `get_json()` 加默认 3 次退避重试(`--retry` / `--backoff`,第 n 次等 n×backoff 秒),单问题只在真正连续失败时才降级,并把 `已重试 N 次` 写进 `fetch_error`。**判据**:若跑完看到 `source=search_fallback`,先看 `fetch_error`——是 403 就重跑本步(不要急着换 Cookie),别把它当成 Cookie 失效。
 34. **「案例」类条目会退化成同类个案的堆叠**:实测 2026-09-12 的 rank2 并列「祁东店主无责赔1.9万」与「彭宇案索赔13.6万」、rank5 并列「山西铁头13人落网」与「松哥打虎20余人」——两组各自讲的是**同一类问题**(善意介入被索赔 / 同批打假网红被刑事收网),换成其中任一条论点强度都不变,属于为凑条数反复搜索。用户 2026-09-12 明令:**案例支持类除非存在极大差别,否则只采用一条,不反复搜索**;被舍去的案例写进 `thinking` 并以「未采用但值得记录——」起头。判据见「收敛性判断」第 4 条。收敛此类条目后要**同步改 `ext_search/<D>/rank_<N>/rank_<N>.json`**(否则将来重跑 `merge_extension.py` 会把被合并的条目带回来),再跑 `topic_lib prune` + `update` 与下游 `fill_excel` / `gen_html` / `verify_html`。
 35. **扁平条目列表 + 一大段 thinking ⇒ 交付物读不出论证结构**:旧格式把「洗衣机抽样」「河南病例」「灭活参数」并排堆着,读者无法判断哪条在支持哪个论点、哪条在反驳它(用户 2026-09-12 原话:「没有形成结构化分析的框架…目前太乱了,要求条目要清晰」)。现固定为**发散链**:`想法(claim) → 证据(逐条 relation=印证/反驳/边界) → 落点(takeaway)`,HTML 用金色链块渲染(证据行带彩色关系标签、thinking 收进折叠区),Excel 用「想法/落点」行 + 「关系」列表达同一结构。**注意 `边界` 是最高频也最易漏的一类**(「对,但仅限…」);每条证据只能归入一条链;旧 `items` 格式仍兼容,但只回退成"无想法的证据堆"。
+36. **FTS5 默认分词器检索不了中文子串**:`fts5` 不显式指定 tokenizer 时用 unicode61,它把连续中文整段当一个词——建索引 `上海市疾控中心抽查128台家用洗衣机…`,查「洗衣机」命中 **0**(实测)。中文子串检索必须 `tokenize='trigram'`(SQLite ≥3.34;本机 3.45 实测「洗衣机」「霉菌检出率」「上海市疾控」均命中)。注意 trigram 要求查询串 ≥3 字符,短词退回 `LIKE`。
+37. **话题库 update/prune 是全量重写,必须原子替换**:这两个命令都是"读 index.json → 改 → 整体写回",直接 `open(w)` 时若中途报错(如 Windows 上文件被 Excel/编辑器占用、磁盘写满)会把整库写成半截。现统一走 `atomic_write()`(写 `.tmp` 再 `os.replace`)。同理:`search` 会自动重建 sqlite 加速索引,若索引文件被别的进程占用会失败——此时删掉 `index.sqlite` 即可(它是派生物,`reindex` 随时重建)。
 
 ## 脚本清单(skill/scripts/,全流程通用)
 
