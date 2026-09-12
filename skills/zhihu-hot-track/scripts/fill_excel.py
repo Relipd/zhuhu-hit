@@ -134,9 +134,10 @@ def main():
 
     # ---- 热点拓展板块(extension.json, 仅热榜前10) ----
     if ext:
-        # 末两列「发散想法 / 关系」为链式结构新增; 追加在末尾, 保证历史日期的行不会错位。
+        # 末列「发散想法 / 关系 / 信源等级 / 多源印证 / 链接」为链式与事实性复核新增;
+        # 追加在末尾, 保证历史日期的行不会错位。
         EXT_HEADERS = ["日期", "排名", "问题标题", "扩展类型", "扩展内容", "来源链接", "备注",
-                       "发散想法", "关系"]
+                       "发散想法", "关系", "信源等级", "多源印证", "链接"]
         ext_sheet = wb.create_sheet("热点拓展") if "热点拓展" not in wb.sheetnames else wb["热点拓展"]
         # 保留其他日期的行
         # 注意: 历史上每次重跑都会把残留的表头行(首列 = "日期")当作"其他日期的数据行"
@@ -172,18 +173,25 @@ def main():
                     src_note = ("出处：" + "·".join(labels)) if src.get("url") else ""
                     new_rows.append([args.date, int(rank_str), e["title"], "想法",
                                      ch.get("claim", ""), src.get("url", ""), src_note,
-                                     ch.get("claim", ""), ""])
+                                     ch.get("claim", ""), "", "", "", ""])
                     for it in ch.get("evidence", []):
+                        tier = it.get("source_tier") or ""
+                        tier_txt = ("%s·%s" % (tier, contract.EXT_SOURCE_TIERS[tier])
+                                    if tier in contract.EXT_SOURCE_TIERS else "")
+                        corr = it.get("corroboration") or {}
+                        corr_txt = ("独立来源 %d 组" % corr["groups"]
+                                    if corr.get("groups") else "")
                         new_rows.append([args.date, int(rank_str), e["title"], it["type"], it["content"],
                                          it.get("url", ""), it.get("note", ""),
-                                         ch.get("claim", ""), it.get("relation", "")])
+                                         ch.get("claim", ""), it.get("relation", ""),
+                                         tier_txt, corr_txt, it.get("link_status", "")])
                     if ch.get("takeaway"):
                         # 落点行附本链全部来源(多个链接换行分隔), 便于顺着结论回看证据
                         ev_urls = [it.get("url", "") for it in ch.get("evidence", []) if it.get("url")]
                         new_rows.append([args.date, int(rank_str), e["title"], "落点",
                                          ch["takeaway"], "\n".join(ev_urls),
                                          "本链来源 %d 条" % len(ev_urls) if ev_urls else "",
-                                         ch.get("claim", ""), ""])
+                                         ch.get("claim", ""), "", "", "", ""])
             else:
                 # 兼容历史格式(无 chains): 扁平条目
                 for it in e.get("items", []):
@@ -191,7 +199,7 @@ def main():
                                      it.get("url", ""), it.get("note", ""), "", it.get("relation", "")])
             if e.get("thinking"):
                 new_rows.append([args.date, int(rank_str), e["title"], "思考过程", e["thinking"],
-                                 "", "", "", ""])
+                                 "", "", "", "", "", "", ""])
         all_rows = new_rows + old_rows
         all_rows.sort(key=lambda r: (str(r[0]), r[1]), reverse=True)  # 最新日期在上
         for r in all_rows:
@@ -203,10 +211,10 @@ def main():
             u = ext_sheet.cell(row=ext_sheet.max_row, column=6)
             if r[5] and "\n" not in str(r[5]):     # 多个链接的单元格(落点行)不做超链接, 避免指向无效地址
                 u.hyperlink = r[5]
-        for i, w in enumerate([11, 6, 36, 10, 52, 36, 18, 40, 8], 1):
+        for i, w in enumerate([11, 6, 36, 10, 52, 36, 18, 40, 8, 22, 14, 10], 1):
             ext_sheet.column_dimensions[get_column_letter(i)].width = w
         ext_sheet.freeze_panes = "A2"
-        ext_sheet.auto_filter.ref = f"A1:I{ext_sheet.max_row}"
+        ext_sheet.auto_filter.ref = f"A1:L{ext_sheet.max_row}"
         wb.move_sheet("热点拓展", offset=len(wb.sheetnames) - 2)
 
     if "说明" in wb.sheetnames:

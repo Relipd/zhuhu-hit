@@ -65,7 +65,8 @@ LIB_MD = "话题库.md"                    # 人读视图(由 index 重建,勿�
 #     cat 是主题标签, 走受控词表(见 LIB_CATS), 仅作二级分组。
 LIB_SCHEMA = 2                          # index.json schema 版本(每次改字段结构都要 +1)
 LIB_FIELDS = ("date", "last_seen", "type", "cat", "content", "url")
-LIB_OPT_FIELDS = ("entities", "adopted", "claim", "relation", "claim_source_url")
+LIB_OPT_FIELDS = ("entities", "adopted", "claim", "relation", "claim_source_url",
+                  "source_tier", "corroborated", "link_status")
 LIB_GROUP_FIELD = "type"               # 人读视图(index→md)的分组维度
 LIB_SQLITE = "index.sqlite"            # 加速索引(派生物, 由 index.json 重建)
 LIB_SIMILAR_RATIO = 0.55               # 「疑似同类」相似度阈值(仅告警, 不自动合并)
@@ -156,6 +157,51 @@ EXT_RELATION_CSS = {"印证": "ok", "反驳": "no", "边界": "mid"}
 # 未采用但值得记录(被「同类案例只取一条」收敛掉的案例): 不进 items/交付物, 但会以
 # adopted=false 入话题库, 使后续发散查重能命中「已知同类、已判定不采用」。
 EXT_DROPPED_FIELDS = ("type", "content", "url", "note", "reason")
+
+# ── 信源门槛与事实性复核(2026-09-12 用户要求) ──────────────────────────────
+# 前提: 本流程的信源集中在知乎, 交付的其实是**「知乎平台公众言论」的事实性提炼**, 不是已核实的事实。
+# 因此采信标准按「言论」定: 谁说的(归属) + 有没有可核锚点(数字/条号/公报口径) + 是事实还是主张。
+# 判定权在**采集端(subagent)**; 脚本只做兜底打标 —— 实测纯正则识别「具名主体」会把
+# 「华为发布 Mate XT 2」这类专有名词判成无具名(31/65 条落入"待定"), 误杀率过高, **不可硬拦截**。
+EXT_SOURCE_TIERS = {
+    "A": "事实性(具名主体+可核锚点)",
+    "B": "待定(有锚点, 未见具名主体)",
+    "C": "不采信(匿名归属, 仅作平台观点)",
+    "D": "观点(无锚点)",
+}
+EXT_TIER_ORDER = ("A", "B", "C", "D")
+# 匿名/转述归属 → 不可作为事实采信(用户举例: 「有从业者对比称, 2000粉博主月入3000-4000元」)
+# 注意: 不能直接写 `据称` —— 实测「CIA数**据称**」会被子串误命中, 必须加否定环视。
+EXT_HEARSAY = (r"有从业者|业内人士|(?<![数据根依论票证])据称|据传|据说|网传|据悉|"
+               r"网友(称|表示|爆料)|有人(称|说)|知情人|传闻|爆料称|相关人士|某(博主|公司|企业)")
+# 具名主体(**严格版**): 只认"专有名词形态" —— 实测宽松版把「品牌投放」「报告」当具名主体,
+# 会把用户举例的「有从业者对比称…」那条顶出「不采信」桶(它本该在里面)。
+# 形态 = 书名号引用 / 独特媒体与机构名 / 「[中文2-6字]+机构后缀」/ 中文人名+职务
+EXT_NAMED = (r"《[^》]{2,24}》|新华社|央视|人民日报|澎湃|界面新闻|财新|第一财经|南方周末|"
+             r"华盛顿邮报|纽约时报|路透|美联社|CNN|BBC|彭博|华尔街日报|CIA|白宫|五角大楼|"
+             r"[\u4e00-\u9fa5]{2,6}(局|院|部|委|署|中心|集团|公司|大学|银行|法院|检察院|"
+             r"研究所|研究院|协会|基金会|实验室|统计局|疾控中心|白皮书|公报)")
+# 法规条号/案号 也属可核锚点(中文数字, 数字正则抓不到)
+EXT_ANCHOR_EXTRA = (r"第[一二三四五六七八九十百零〇\d]+条|法释〔\d{4}〕\d*号?|〔\d{4}〕\d+号|"
+                    r"（\d{4}）[\u4e00-\u9fa5]{0,4}\d+号|案号")
+# 可核锚点: 具体数字 + 量词/单位(金额/比例/样本量/数量/年龄/时长/技术参数)
+# 允许数字与单位之间夹「多/余/约/近/上/左右」—— 实测「900多万元」「300多天」不加这层就抓不到
+EXT_NUM_UNIT = (r"\d[\d,.]*\s*[多余约近上]?\s*(元|万元|亿元|亿美元|万|亿|%|‰|台|份|人|例|户|个|名|条|次|"
+                r"天|年|月|日|岁|小时|分钟|分|秒|米|公里|吨|辆|架|枚|颗|起|家|项|款|层|楼|GHz|TOPS|"
+                r"MTr|PB/s|万辆|万台|万人次|周岁)")
+EXT_NUM_MIN = 2                    # 认定为「有可核锚点」的数字个数下限
+EXT_CORROBORATION_MIN = 2          # 多源印证的「独立来源组」下限
+EXT_SHINGLE_FOLD = 0.60            # 同源折叠阈值: 洗稿转载视为同一来源
+EXT_LINK_TIMEOUT = 15              # 链接探活超时秒
+EXT_LINK_DELAY = 0.4               # 探活间隔秒
+# 来源类别(按域名判定, 零 token): 官方 / 一手媒体 / 站内专栏 / 站内回答 / 其他
+EXT_OFFICIAL_HOSTS = ("gov.cn", "stats.gov.cn", "court.gov.cn", "spp.gov.cn", "nhc.gov.cn",
+                      "mofcom.gov.cn", "miit.gov.cn", "samr.gov.cn")
+EXT_MEDIA_HOSTS = ("xinhuanet.com", "news.cn", "people.com.cn", "cctv.com", "thepaper.cn",
+                   "caixin.com", "jiemian.com", "yicai.com", "infzm.com", "bjnews.com.cn",
+                   "chinanews.com.cn", "nbd.com.cn", "21jingji.com", "stcn.com")
+EXT_HOST_KINDS = (("zhuanlan.zhihu.com", "站内专栏"), ("www.zhihu.com", "站内回答"),
+                  ("zhihu.com", "站内回答"))
 # 想法的出处(可选但推荐): 该想法提炼自哪条回答 → 直接把链接与序号附上去
 # {"answer_index": 3, "likes": 294, "url": "https://www.zhihu.com/question/.../answer/..."}
 EXT_CHAIN_SOURCE = "source"

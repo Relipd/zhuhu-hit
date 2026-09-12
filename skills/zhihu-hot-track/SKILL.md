@@ -181,8 +181,12 @@ D=2026-08-09                              # 抓取日期
 4. 拓展:   **Agent Swarm 并行**: rank 1-10 各派 subagent 独立执行"读回答→发散搜索→产出发散点"
             (subagent 输出 schema 见"热点拓展板块", 必须遵守)
 4b.汇总:   python scripts/merge_extension.py --root %ROOT% --date %D%
-            → raw/<D>/extension.json(schema 强校验: type 值域 / 同类型≤3 / URL 真实 / 必填字段;
-              容忍历史格式变体, 但缺失 thinking、跨 rank 重复 URL、超限类型会告警或直接失败)
+            → raw/<D>/extension.json(链式强校验: claim/evidence/takeaway + relation 值域 +
+              type 值域 / 同类型≤3 / 必填字段 / URL; 按链展平 items; 容忍旧扁平格式)
+4c.复核:   python scripts/verify_ext.py --root %ROOT% --date %D%
+            → 信源门槛兜底(A事实性/B待定/C不采信/D观点) + 多源印证(当日检索归档池 + 同源折叠)
+              + 链接探活 + 归档核对; 结果写回 extension.json 并另出报告 raw/<D>/ext_verify.json
+              (--no-links 可跳网络; 必须在 merge 之后跑, 重跑 merge 会清掉复核字段)
 5. 校验:   python scripts/check.py --root %ROOT% --date %D%     (零缺失才继续)
 6. 填表:   python scripts/fill_excel.py --root %ROOT% --date %D%
             → 跟进excel-YYYY-MM.xlsx(自动建模板;新日期 sheet 插最前;情绪列下拉 + 截断备注 + 热点拓展 sheet)
@@ -422,6 +426,30 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
   - **跨 rank 复用同一 URL**:`merge_extension.py` 会告警,`topic_lib update` 按 url 去重——首个条目入库,后续同 url 条目在 content 更长时执行「内容升级」(实测 2026-09-11 出现 1 例:rank3/rank4 复用同一来源服务于不同发散点)。复用可接受,但应确认是有意为之,而非子任务重复搜索。
 - **跨日期作用**:话题库是断点续跑与多日积累的共享记忆(index.json 可被任何脚本/子任务读取),新日期的发散在已有条目基础上继续补新,不重新挖旧土。
 
+### 信源门槛(采集端强制,2026-09-12 用户要求)
+
+**前提**:本流程信源集中在知乎,**交付的其实是「知乎平台公众言论」的事实性提炼,不是已核实的事实**。因此采信标准按"言论"定,而不是按"事实"定——后者永远验不完,前者有明确门槛。
+
+**采集端三问(不通过就不进 items)**:
+
+| 问 | 通过 | 不通过 |
+|---|---|---|
+| **① 谁说的?** | 具名机构/媒体/法院/政府/公报/实名当事人 | 匿名群体:`有从业者`、`业内人士`、`据悉`、`网传`、`某博主` → **只能作观点,不得作为事实条目** |
+| **② 有可核锚点吗?** | 金额 / 比例 / 样本量 / 案号 / 法规条号 / 公报口径 / 具体时间地点 | 无任何数字与条号的概括 → 只进 `thinking` 或标 `D·观点` |
+| **③ 事实还是主张?** | 可被第三方按同样数字核对的事实陈述 | 个人主张/预测(如「自媒体极难变现」「大博主赚不到钱」)→ 只进 `thinking` |
+
+**明确禁止采集的三类**(实测案例):
+1. **匿名群体的量化断言**——「有从业者对比称,2000粉博主月入3000-4000元」:数字长得像证据,归属却是匿名的,**不值得采信**(2026-09-12 rank5 实例,已被判 `C·不采信`);
+2. **无出处的行业概括**——「自媒体极难变现」「大博主赚不到钱小博主稳赚钱」;
+3. **未经证实的预测性判断**。
+
+**优先采集**(天然高可信):判决/通报/公报/统计/企业公告/实名当事人陈述/带案号的案件。
+
+**脚本兜底(不硬拦截)**:`verify_ext.py` 会按上表给每条证据打 `source_tier` ——
+`A 事实性(具名主体+可核锚点)` / `B 待定(有锚点,未见具名主体)` / `C 不采信(匿名归属)` / `D 观点(无锚点)`,
+并支持**多源印证升级**(独立来源组 ≥2 → 升 A)。判定权仍在采集端,脚本只是兜底:
+实测纯正则识别"具名主体"会把「华为发布 Mate XT 2」这类专有名词判成无具名,误杀率过高,**不可据此硬删条目**;`C` 类保留在库可审计,但在交付物上带红色标签与「不采信」提示,不冒充事实。
+
 ### 收敛性判断(每轮检索前必做,命中即跳过本轮)
 
 构造新查询前依次判重,以下任一命中则不执行该查询:
@@ -473,7 +501,7 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 - Excel「热点拓展」sheet:`日期 | 排名 | 问题标题 | 扩展类型 | 扩展内容 | 来源链接 | 备注 | 发散想法 | 关系`;链式渲染会额外产出「**想法**」与「**落点**」两类行(扩展类型列标出),证据行的「关系」列给出 印证/反驳/边界。**有链接就附上**:想法行的来源链接列是该想法的出处回答(可点击,备注列写明「回答 N·M 赞」),落点行的来源链接列列出本链全部来源。末两列为新增,追加在末尾以保证历史日期的行不错位。最新日期块在最上,跨日期自动累积。
 - 范围硬约束:**只处理热榜前 10**,第 11-20 名不扩展(主流程四维分析照常覆盖全部 20)。
 
-## 踩过的坑(1-37,勿重蹈)
+## 踩过的坑(1-39,勿重蹈)
 
 1. **PS 5.1 管道换行 → AUTH_INVALID**:`"secret" | zhihu-cli auth set --secret-stdin` 会追加换行导致服务端校验失败(Secret 本身有效)。用 `cmd /c "echo|set /p=<secret>|<cli> auth set --secret-stdin"` 无换行传入。
 2. **无 BOM UTF-8 ps1 在 PS 5.1 报语法错误**:官方脚本(run.ps1/setup.ps1)含中文注释,需转存为带 BOM 的 UTF-8 才能被 PS 5.1 解析。
@@ -512,6 +540,10 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 35. **扁平条目列表 + 一大段 thinking ⇒ 交付物读不出论证结构**:旧格式把「洗衣机抽样」「河南病例」「灭活参数」并排堆着,读者无法判断哪条在支持哪个论点、哪条在反驳它(用户 2026-09-12 原话:「没有形成结构化分析的框架…目前太乱了,要求条目要清晰」)。现固定为**发散链**:`想法(claim) → 证据(逐条 relation=印证/反驳/边界) → 落点(takeaway)`,HTML 用金色链块渲染(证据行带彩色关系标签、thinking 收进折叠区),Excel 用「想法/落点」行 + 「关系」列表达同一结构。**注意 `边界` 是最高频也最易漏的一类**(「对,但仅限…」);每条证据只能归入一条链;旧 `items` 格式仍兼容,但只回退成"无想法的证据堆"。
 36. **FTS5 默认分词器检索不了中文子串**:`fts5` 不显式指定 tokenizer 时用 unicode61,它把连续中文整段当一个词——建索引 `上海市疾控中心抽查128台家用洗衣机…`,查「洗衣机」命中 **0**(实测)。中文子串检索必须 `tokenize='trigram'`(SQLite ≥3.34;本机 3.45 实测「洗衣机」「霉菌检出率」「上海市疾控」均命中)。注意 trigram 要求查询串 ≥3 字符,短词退回 `LIKE`。
 37. **话题库 update/prune 是全量重写,必须原子替换**:这两个命令都是"读 index.json → 改 → 整体写回",直接 `open(w)` 时若中途报错(如 Windows 上文件被 Excel/编辑器占用、磁盘写满)会把整库写成半截。现统一走 `atomic_write()`(写 `.tmp` 再 `os.replace`)。同理:`search` 会自动重建 sqlite 加速索引,若索引文件被别的进程占用会失败——此时删掉 `index.sqlite` 即可(它是派生物,`reindex` 随时重建)。
+38. **中文关键词的两个正则陷阱(都在信源门槛里实测踩到)**:
+    ① **子串误命中**——裸写 `据称` 会把「CIA数**据称**其保留战前70%」判成匿名归属,把一条外媒引述错标成「不采信」。必须加否定环视:`(?<![数据根依论票证])据称`。
+    ② **数字匹配过宽**——用裸数字(如 `60`)在检索归档池里找印证,一条证据能"匹配"出 **243** 个来源组,全是巧合。必须用**完整 token**(`60.2%`、`5839万`)匹配,且只采信"特异数字"(≥3 位,或带金额/百分比单位)。另外别用 `len(digit)>=2` 过滤锚点——那会把「定损**4万**至5万」这种一等锚点丢掉;`数字+多/余/约+单位`(`900多万元`)也要覆盖。
+39. **复核字段必须同时落到 `items` 与 `chains[].evidence`**:`verify_ext.py` 首次实现只给展平的 `items` 打标,而 Excel/HTML 渲染读的是 `chains[].evidence`——JSON 往返后二者是**不同对象**,结果交付物上等级标签数为 0,而话题库(读 items)却有等级。凡是"后处理打标"都要显式传播到全部引用位置。**另**:`verify_ext` 必须在 `merge_extension` **之后**跑,重跑 merge 会清掉复核字段。
 
 ## 脚本清单(skill/scripts/,全流程通用)
 
@@ -529,7 +561,8 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 | `verify_html.py` | **约束四自动校验**(详情页数/折叠数/翻页/入口/索引/接口摘要/拓展范围),退出码 0 即通过 | `--root --date` |
 | `fill_excel.py` | 填月度 Excel(自动建模板、情绪列下拉、截断备注、热点拓展 sheet) | `--root --date --xlsx` |
 | `gen_html.py` | 生成 HTML 展示页(原文状态标签、热点拓展块) | `--root --date --out` |
-| `topic_lib.py` | 话题库维护(定位:避免重复搜索的 database;维度区隔 type=一级全局索引 / cat=二级主题标签 / date=首次收录日期只作属性):update 增量收录(url 去重 + 日期回填 + 同类体检告警)+ search 查重与筛选(url/type/cat/日期区间/关键词)+ rebuild 重建 md + prune 全库一致性扫描 | `update --root --date` / `search --root --url\|--type\|--cat\|--since\|--until\|--keyword` / `rebuild --root` / `prune --root` |
+| `verify_ext.py` | **发散证据事实性复核**:信源门槛兜底打标(source_tier A/B/C/D)、多源印证(当日检索归档池 + 3-gram 同源折叠识别洗稿)、链接探活、归档核对(url 是否真出自检索结果);结果写回 extension.json, 报告写 `raw/<D>/ext_verify.json` | `--root --date [--no-links] [--delay] [--json]` |
+| `topic_lib.py` | 话题库维护(定位:避免重复搜索的 database;维度区隔 type=一级全局索引 / cat=二级受控标签 / date=首次收录 / last_seen=最近命中):update 增量收录(url 去重 + 日期回填 + 同类体检告警)+ search 查重与筛选(url/type/cat/tier/日期区间/关键词/主体)+ rebuild 重建 md + reindex 重建 sqlite + prune 全库一致性扫描 | `update --root --date` / `search --root --url\|--type\|--cat\|--tier\|--entity\|--since\|--until\|--keyword\|--json\|--adopted-only` / `rebuild --root` / `reindex --root` / `prune --root` |
 | `top2_select.py` | 可选工具:对已抓取的**全量** `answers_summary.json` 做瘦身,每问题保留「最高赞 + 最多评论」2 条,用于压缩 Agent 分析开销(现流程通常在抓取时就用 `--top N` 前置控制条数) | `--root --date [--backup]` |
 
 > **历史说明**:早期版本曾用 `api_fetch.py`(API 直拉 + top2 = 最高赞 + 最多评论)作为抓取首选。其职能已由 `question_fetch.py` **完全取代**,且后者更强(并集召回 web ∪ search、覆盖度标注 `total_answers/coverage/source`、Question/Article/Answer 三类条目适配),该脚本已移除;如需查阅可看 git 历史。**现行流程只有一条抓取链**:`run.py`(关键词搜索召回,作兜底)→ `question_fetch.py`(问题维度并集,主数据源)。

@@ -83,8 +83,10 @@ def norm_item(it):
     rec = {k: (it.get(k) or "") for k in contract.LIB_FIELDS}
     rec["entities"] = [str(x) for x in (it.get("entities") or []) if str(x).strip()]
     rec["adopted"] = bool(it.get("adopted", True))
-    for k in ("claim", "relation", "claim_source_url"):
+    for k in ("claim", "relation", "claim_source_url", "source_tier", "link_status"):
         rec[k] = it.get(k) or ""
+    rec["corroborated"] = bool(it.get("corroborated")) or bool(
+        ((it.get("corroboration") or {}).get("groups") or 0) >= contract.EXT_CORROBORATION_MIN)
     return rec
 
 
@@ -143,9 +145,13 @@ def backfill_dates(root, items):
             it["last_seen"] = rec["last"]
             n_last += 1
         src = rec["item"]
-        for k in ("claim", "relation", "claim_source_url"):
+        for k in ("claim", "relation", "claim_source_url", "source_tier", "link_status"):
             if not it.get(k) and src.get(k):
                 it[k] = src[k]
+                n_opt += 1
+        if not it.get("corroborated") and src.get("corroboration"):
+            if (src["corroboration"].get("groups") or 0) >= contract.EXT_CORROBORATION_MIN:
+                it["corroborated"] = True
                 n_opt += 1
         if not it.get("entities") and src.get("entities"):
             it["entities"] = [str(x) for x in src["entities"] if str(x).strip()]
@@ -271,17 +277,20 @@ def build_sqlite(root, items, src_path):
             CREATE TABLE entries(
               url TEXT PRIMARY KEY, date TEXT, last_seen TEXT, type TEXT, cat TEXT,
               content TEXT, entities TEXT, adopted INTEGER, claim TEXT, relation TEXT,
-              claim_source_url TEXT);
+              claim_source_url TEXT, source_tier TEXT, corroborated INTEGER, link_status TEXT);
             CREATE INDEX idx_type ON entries(type);
             CREATE INDEX idx_cat ON entries(cat);
             CREATE INDEX idx_dates ON entries(date, last_seen);
+            CREATE INDEX idx_tier ON entries(source_tier);
             CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT);
         """)
         rows = [(it["url"], it.get("date") or "", it.get("last_seen") or "", it.get("type") or "",
                  it.get("cat") or "", it.get("content") or "", " ".join(it.get("entities") or []),
                  1 if it.get("adopted", True) else 0, it.get("claim") or "",
-                 it.get("relation") or "", it.get("claim_source_url") or "") for it in items]
-        con.executemany("INSERT OR REPLACE INTO entries VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+                 it.get("relation") or "", it.get("claim_source_url") or "",
+                 it.get("source_tier") or "", 1 if it.get("corroborated") else 0,
+                 it.get("link_status") or "") for it in items]
+        con.executemany("INSERT OR REPLACE INTO entries VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
         try:
             con.execute("CREATE VIRTUAL TABLE fts USING fts5("
                         "url UNINDEXED, content, cat, entities, tokenize='trigram')")
@@ -322,7 +331,7 @@ def ensure_sqlite(root, items, src_path):
 
 
 def sqlite_query(root, *, url=None, type_=None, cat=None, keyword=None, entity=None,
-                 since=None, until=None, include_unadopted=True):
+                 since=None, until=None, tier=None, include_unadopted=True):
     """用加速索引做筛选; 返回 (rows, mode)。rows 为 dict 列表。"""
     con = sqlite3.connect(sqlite_path(root))
     con.row_factory = sqlite3.Row
@@ -337,6 +346,9 @@ def sqlite_query(root, *, url=None, type_=None, cat=None, keyword=None, entity=N
         if cat:
             where.append("e.cat = ?")
             args.append(cat)
+        if tier:
+            where.append("e.source_tier = ?")
+            args.append(tier)
         if since:
             where.append("e.date >= ?")
             args.append(since)
@@ -424,12 +436,7 @@ def cmd_update(root, date):
                         upgraded += 1
                     cur["last_seen"] = max(cur.get("last_seen") or "", date)
                     continue
-                rec = norm_item({"date": date, "last_seen": date, "type": it.get("type"),
-                                 "cat": cat, "content": it.get("content"), "url": it.get("url"),
-                                 "entities": it.get("entities"),
-                                 "adopted": True, "claim": it.get("claim"),
-                                 "relation": it.get("relation"),
-                                 "claim_source_url": it.get("claim_source_url")})
+                rec = norm_item(dict(it, date=date, last_seen=date, cat=cat, adopted=True))
                 items.append(rec)
                 seen[u] = rec
                 added_items.append(rec)
@@ -439,9 +446,7 @@ def cmd_update(root, date):
                 u = item_key(it)
                 if not u or u in seen:
                     continue
-                rec = norm_item({"date": date, "last_seen": date, "type": it.get("type"),
-                                 "cat": cat, "content": it.get("content"), "url": it.get("url"),
-                                 "adopted": False})
+                rec = norm_item(dict(it, date=date, last_seen=date, cat=cat, adopted=False))
                 items.append(rec)
                 seen[u] = rec
                 added_items.append(rec)
@@ -480,7 +485,7 @@ def cmd_update(root, date):
 
 
 def cmd_search(root, url=None, keyword=None, cat=None, type_=None, entity=None,
-               since=None, until=None, as_json=False, include_unadopted=True):
+               since=None, until=None, tier=None, as_json=False, include_unadopted=True):
     ip = contract.lib_index(root)
     schema, raw_items = load_lib(ip)
     items = normalize_items(raw_items)
@@ -489,7 +494,7 @@ def cmd_search(root, url=None, keyword=None, cat=None, type_=None, entity=None,
         return 1
     ensure_sqlite(root, items, ip)
     rows, mode = sqlite_query(root, url=url, type_=type_, cat=cat, keyword=keyword,
-                              entity=entity, since=since, until=until,
+                              entity=entity, since=since, until=until, tier=tier,
                               include_unadopted=include_unadopted)
     if as_json:
         print(json.dumps({"mode": mode, "count": len(rows), "items": rows},
@@ -500,6 +505,7 @@ def cmd_search(root, url=None, keyword=None, cat=None, type_=None, entity=None,
                          ("cat=%s" % cat) if cat else "",
                          ("entity=%s" % entity) if entity else "",
                          ("keyword=%s" % keyword) if keyword else "",
+                         ("tier=%s" % tier) if tier else "",
                          ("since=%s" % since) if since else "",
                          ("until=%s" % until) if until else "") if x]
     print("筛选 %s 命中 %d 条 [%s]" % (" ".join(conds) or "(无条件)", len(rows), mode))
@@ -570,6 +576,8 @@ def main():
     s.add_argument("--type", dest="type_", choices=list(contract.EXT_TYPES),
                    help="按一级维度筛选(案例/人物/链路)")
     s.add_argument("--entity", help="按主体筛选(机构/人物/案件名, 需条目带 entities)")
+    s.add_argument("--tier", choices=list(contract.EXT_TIER_ORDER),
+                   help="按信源等级筛选: A事实性/B待定/C不采信/D观点")
     s.add_argument("--since", help="首次收录日期 >= YYYY-MM-DD")
     s.add_argument("--until", help="首次收录日期 <= YYYY-MM-DD")
     s.add_argument("--json", dest="as_json", action="store_true", help="机读输出")
@@ -586,7 +594,7 @@ def main():
         return cmd_update(a.root, a.date)
     if a.cmd == "search":
         return cmd_search(a.root, a.url, a.keyword, a.cat, a.type_, a.entity,
-                          a.since, a.until, a.as_json, not a.adopted_only)
+                          a.since, a.until, a.tier, a.as_json, not a.adopted_only)
     if a.cmd == "rebuild":
         return cmd_rebuild(a.root)
     if a.cmd == "reindex":

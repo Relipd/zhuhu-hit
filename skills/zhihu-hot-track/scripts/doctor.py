@@ -36,8 +36,8 @@ import contract   # noqa: E402  数据契约:文件名 / 字段 / 值域的单�
 import zhihu_env  # noqa: E402
 
 REQUIRED_SCRIPTS = ["contract.py", "run.py", "question_fetch.py", "fulltext.py", "search_many.py",
-                    "check.py", "merge_extension.py", "verify_html.py", "fill_excel.py",
-                    "gen_html.py", "topic_lib.py", "zhihu_env.py"]
+                    "check.py", "merge_extension.py", "verify_ext.py", "verify_html.py",
+                    "fill_excel.py", "gen_html.py", "topic_lib.py", "zhihu_env.py"]
 SKIP_DIRS = {"windows", "$recycle.bin", "system volume information", "node_modules",
              "appdata", "temp", "tmp", ".git", ".cache", "__pycache__",
              "program files", "program files (x86)", "programdata", "perflogs"}

@@ -97,6 +97,8 @@ details.a-text div { background: #fafaf7; border: 1px solid var(--line); border-
   padding: 12px 14px; margin-top: 6px; white-space: pre-wrap; line-height: 1.7; color: #3a372f; }
 .ext { background: var(--gold-bg); border-top: 2px solid #d9c68a; padding: 14px 24px 16px; font-size: 13.5px; }
 .ext-head { font-weight: 700; color: #8a6d1a; margin-bottom: 9px; font-size: 14px; }
+.ext-tierline { color: #6b5518; font-size: 12px; margin: -4px 0 9px;
+  background: #fdfaf0; border: 1px dashed #e6dbc0; border-radius: 6px; padding: 5px 9px; }
 .ext-thinking { margin: 0 0 8px; color: #5b4a1a; line-height: 1.65; font-size: 13px; }
 .ext-thinking b { color: #8a6d1a; }
 .ext-item { margin: 5px 0; color: #444; font-size: 13px; }
@@ -119,6 +121,15 @@ details.think a { color: var(--ink); }
 .chain-ev a { color: var(--ink); text-decoration: none; font-size: 12.5px; }
 .chain-ev a:hover { text-decoration: underline; }
 .chain-ev .note { color: var(--muted); font-size: 12px; }
+.chain-ev-c { border-left-color: #d9a6a0; background: #fdf7f6; }
+.tier { display: inline-block; border-radius: 4px; padding: 0 5px; margin-right: 5px;
+  font-size: 11px; font-weight: 700; color: #fff; vertical-align: 1px; }
+.tier.tA { background: #2f7d4f; } .tier.tB { background: #b08d2e; }
+.tier.tC { background: #b4453a; } .tier.tD { background: #8a8a8a; }
+.kind, .corr { display: inline-block; font-size: 11px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-right: 5px; }
+.corr { color: #2f7d4f; border-color: #bcd8c5; }
+.dead { display: inline-block; font-size: 11px; color: #b4453a; margin-right: 5px; }
 .rel { display: inline-block; border-radius: 4px; padding: 0 5px; margin-right: 6px;
   font-size: 11.5px; font-weight: 700; color: #fff; vertical-align: 1px; }
 .rel.ok { background: #2f7d4f; }
@@ -256,14 +267,44 @@ def main():
             if rel:
                 cls = contract.EXT_RELATION_CSS.get(rel, "mid")
                 badge = f'<span class="rel {cls}">{html.escape(rel)}</span>'
+            # 信源等级(由 verify_ext.py 复核写入): A 事实性 / B 待定 / C 不采信 / D 观点
+            tier = it.get("source_tier") or ""
+            tier_html = ""
+            if tier in contract.EXT_SOURCE_TIERS:
+                label = contract.EXT_SOURCE_TIERS[tier]
+                tier_html = (f'<span class="tier t{tier}" title="{html.escape(label)}">'
+                             f'{tier}</span>')
+                kind = it.get("source_kind") or ""
+                if kind:
+                    tier_html += f'<span class="kind">{html.escape(kind)}</span>'
+                if it.get("link_status") and str(it["link_status"]) != "200":
+                    tier_html += (f'<span class="dead">来源已失效 {html.escape(str(it["link_status"]))}'
+                                  f'</span>')
+                corr = (it.get("corroboration") or {}).get("groups") or 0
+                if corr >= contract.EXT_CORROBORATION_MIN:
+                    hosts = (it.get("corroboration") or {}).get("hosts") or []
+                    tier_html += (f'<span class="corr" title="独立来源组 {corr}：'
+                                  f'{html.escape("、".join(hosts))}">多源印证</span>')
             url = it.get("url", "")
             link = f' <a href="{html.escape(url)}" target="_blank">[来源]</a>' if url else ""
             note = f' <span class="note">({html.escape(it["note"])})</span>' if it.get("note") else ""
-            return (f'<div class="chain-ev">{badge}<b>[{html.escape(it["type"])}]</b> '
+            cls = " chain-ev-c" if tier == "C" else ""
+            return (f'<div class="chain-ev{cls}">{badge}{tier_html}'
+                    f'<b>[{html.escape(it["type"])}]</b> '
                     f'{html.escape(it["content"])}{link}{note}</div>')
 
         if chains:
             # 结构化: 每条链 = 想法(可附原答链接) → 证据(印证/反驳/边界) → 落点
+            tiers = {}
+            for ch0 in chains:
+                for it0 in ch0.get("evidence", []):
+                    t0 = it0.get("source_tier")
+                    if t0:
+                        tiers[t0] = tiers.get(t0, 0) + 1
+            if tiers:
+                parts.append('<div class="ext-tierline">信源等级：' + " · ".join(
+                    f'{t} {contract.EXT_SOURCE_TIERS[t]} {tiers[t]} 条'
+                    for t in contract.EXT_TIER_ORDER if t in tiers) + '</div>')
             for ci, ch in enumerate(chains, 1):
                 parts.append('<div class="chain">')
                 src = ch.get("source") or {}
