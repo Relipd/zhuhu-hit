@@ -59,6 +59,10 @@ API = "https://www.zhihu.com/api/v4"
 # 会让整个 include 部分失效 —— voteup_count 直接变成 None(表现: 抓到回答但赞数全 0)。
 ANS_INCLUDE = "data[*].voteup_count,content,data[*].comment_count"
 
+# 请求级重试参数(由 --retry/--backoff 覆盖, 见 get_json 的说明)
+_RETRY = 3
+_BACKOFF = 5.0
+
 
 def strip_html(html):
     txt = re.sub(r"<[^>]+>", "", html or "")
@@ -76,14 +80,32 @@ def load_cookie(root, date):
     return io.open(p, encoding="utf-8-sig").read().strip(), p
 
 
-def get_json(url, cookie=None, timeout=25):
+def get_json(url, cookie=None, timeout=25, retry=None, backoff=None):
+    """带退避重试的 JSON 请求(单一入口, 三种条目类型共用)。
+
+    为什么必须重试: 实测知乎网页接口在连续请求后会偶发 403(限流), 而**同一个 Cookie、
+    同一个 URL 单独请求又返回 200**。2026-09-12 的 rank5 就是这样一次瞬时 403 被上层
+    try/except 兜底成 search_fallback, 结果该问题既丢了主数据源、也丢了 total_answers/coverage
+    (覆盖率标注的依据)。此处重试后, 上层只在真正连续失败时才降级。
+    """
+    retry = _RETRY if retry is None else retry
+    backoff = _BACKOFF if backoff is None else backoff
     headers = {"User-Agent": UA, "Accept": "application/json, text/plain, */*",
                "Referer": "https://www.zhihu.com/"}
     if cookie:
         headers["Cookie"] = cookie
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8"))
+    last = None
+    for attempt in range(1, max(1, retry) + 1):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except Exception as e:
+            last = e
+            if attempt >= max(1, retry):
+                break
+            time.sleep(backoff * attempt)
+    raise last
 
 
 def kind_of(url):
@@ -101,7 +123,6 @@ def aid_key(url):
     """回答的稳定去重键(优先 answer id)。"""
     m = re.search(r"/answer/(\d+)", url or "")
     return m.group(1) if m else (url or "")
-
 
 def qid_of(url):
     m = re.search(r"/question/(\d+)", url or "")
@@ -180,10 +201,15 @@ def main():
     ap.add_argument("--top", type=int, default=5, help="每问题保留的高赞回答数(默认5)")
     ap.add_argument("--pages", type=int, default=1, help="每问题取几页(每页20条, 取多页提高最热N命中率)")
     ap.add_argument("--delay", type=float, default=1.5, help="请求间隔秒(防限流)")
+    ap.add_argument("--retry", type=int, default=3, help="单问题失败重试次数(默认3)")
+    ap.add_argument("--backoff", type=float, default=5.0, help="重试退避基数秒(第 n 次等 n*backoff)")
     ap.add_argument("--out", default=None, help="输出路径, 默认覆盖 raw/<D>/answers_summary.json")
     ap.add_argument("--no-merge", action="store_true",
                     help="只用网页结果, 不并入搜索召回(默认并入: web ∪ search 并集)")
     args = ap.parse_args()
+
+    global _RETRY, _BACKOFF
+    _RETRY, _BACKOFF = max(1, args.retry), max(0.0, args.backoff)
 
     day = contract.day_dir(args.root, args.date)
     hot = json.load(io.open(contract.path_hot(args.root, args.date), encoding="utf-8-sig"))

@@ -422,6 +422,7 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 30. **约定散落多处 ⇒ 漏改不报错,只在运行期现形**:`"hot.json"` 曾出现在 6 个脚本、情绪三值出现在 4 个、HTML 标记出现在生成与校验两侧。漏改的表现是「文件找不到」或「校验莫名失败」,而非报错。现全部收敛到 `scripts/contract.py`(见「脚本间契约」一节);**新增脚本禁止再写这些字面量**。
 31. **`fill_excel.py` 的热点拓展表会逐次累积重复表头**:旧写法 `delete_rows(2, max_row)` 只清数据行、保留第 1 行旧表头,`append(EXT_HEADERS)` 又把新表头写到第 2 行;更糟的是下次运行时那行残留表头首列是「日期」≠ 当日,被当作"其他日期的数据行"再保留一次——实测 2026-09 表里积了 4 行重复表头。现改为**先清空整表(含表头)再写表头**,并过滤首列为空或为「日期」的旧行。教训:凡是「保留旧行 + 重写当前日期」的表格操作,必须把**表头行本身**排除在"旧数据行"之外。
 32. **PS 5.1 按 ANSI 读无 BOM 的 .ps1**:含中文的临时回归脚本若存成无 BOM UTF-8,`powershell -File` 会以 GBK 解码,报 `Unexpected token` 而非执行。用 `[IO.File]::WriteAllText($p,$s,(New-Object Text.UTF8Encoding($true)))` 存带 BOM 版本(与坑 2 同源);或直接改用 Python 写回归脚本。
+33. **问题维度接口的瞬时 403 会被静默兜底,连覆盖率一起丢**:`question_fetch.py` 连续请求 20 个问题 × 3 页后,知乎网页接口会偶发 403(限流),而**同一 Cookie 单独请求同一问题立刻返回 200**(2026-09-12 实测:rank5 记 HTTP 403 并降级为 `search_fallback`,该问题因此既丢主数据源、也没了 `total_answers/coverage`——覆盖率标注的依据)。现已在**请求单一入口** `get_json()` 加默认 3 次退避重试(`--retry` / `--backoff`,第 n 次等 n×backoff 秒),单问题只在真正连续失败时才降级,并把 `已重试 N 次` 写进 `fetch_error`。**判据**:若跑完看到 `source=search_fallback`,先看 `fetch_error`——是 403 就重跑本步(不要急着换 Cookie),别把它当成 Cookie 失效。
 
 ## 脚本清单(skill/scripts/,全流程通用)
 
@@ -431,7 +432,7 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 | `zhihu_env.py` | **基础技术栈适配层**:统一解析 CLI 路径(`ZHIHU_CLI` → `ZHIHU_CLI_HOME` → 平台默认 → 兜底问 zhihu skill 的 status)与凭证库状态;被所有业务脚本 import | 作为模块:`require_cli()` / `diagnose()` / `keychain_present()` / `skill_status()` |
 | `doctor.py` | **环境与数据自检**:运行时/脚本完整性/基础栈(CLI+凭证+skill 版本)/ROOT/当日数据;`--discover` 自动发现候选 ROOT | `--root --date --discover --json` |
 | `run.py` | 热榜 + 变体搜索 + 合并去重(关键词召回, 作兜底数据源) | `--root --date --limit --variants --resume` |
-| `question_fetch.py` | **问题维度抓取**(主数据源):网页接口按赞取每问题最热 N 条, 与搜索召回取**并集**, 适配 Question/Article/Answer 三类条目, 写入 `total_answers`/`coverage`/`source` | `--root --date --top 5 --pages 3 --out --no-merge` |
+| `question_fetch.py` | **问题维度抓取**(主数据源):网页接口按赞取每问题最热 N 条, 与搜索召回取**并集**, 适配 Question/Article/Answer 三类条目, 写入 `total_answers`/`coverage`/`source`; 请求级退避重试(防瞬时 403 被静默降级) | `--root --date --top 5 --pages 3 --out --no-merge --retry --backoff` |
 | `fulltext.py` | 回答全文补全 + 截断检测(每条自动重试 3 次、失败原因写入 `error`;`--cookie` 解锁全文) | `--root --date --delay --retry --backoff --force --cookie` |
 | `search_many.py` | 批量发散搜索(热点拓展用,queries.json 驱动) | `queries.json outdir --db --delay --count` |
 | `check.py` | 数据完整性校验(分析齐全/情绪值域/URL/内容/状态) | `--root --date` |
