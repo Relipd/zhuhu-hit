@@ -203,28 +203,25 @@ def probe(url, cookie):
         return type(e).__name__
 
 
-def main():
-    ap = argparse.ArgumentParser(description="发散证据事实性复核(信源门槛兜底/多源印证/链接探活)")
-    ap.add_argument("--root", default=os.getcwd())
-    ap.add_argument("--date", required=True)
-    ap.add_argument("--no-links", action="store_true", help="跳过链接探活(纯本地, 零请求)")
-    ap.add_argument("--delay", type=float, default=contract.EXT_LINK_DELAY)
-    ap.add_argument("--json", action="store_true", help="只输出机读报告")
-    args = ap.parse_args()
+def run(root, date, no_links=False, delay=None, quiet=False):
+    """执行复核并把结果写回 raw/<D>/extension.json; 返回报告 dict。
 
-    path = contract.path_extension(args.root, args.date)
+    被 merge_extension.py 在写完 extension.json 后直接调用(步骤已合并), 也可单独 CLI 调用。
+    """
+    delay = contract.EXT_LINK_DELAY if delay is None else delay
+    path = contract.path_extension(root, date)
     if not os.path.exists(path):
-        sys.exit("[FAIL] 未找到 %s" % path)
+        raise FileNotFoundError("未找到 %s" % path)
     ext = json.load(io.open(path, encoding="utf-8-sig"))
 
-    pool = load_archive(args.root, args.date)
+    pool = load_archive(root, date)
     pool_urls = {re.sub(r"\?.*$", "", p["url"]).rstrip("/") for p in pool}
-    cookie_path = contract.path_cookie(args.root, args.date)
+    cookie_path = contract.path_cookie(root, date)
     if not os.path.exists(cookie_path):
         cookie_path = None
-        raw = os.path.join(args.root, contract.RAW_DIRNAME)
+        raw = os.path.join(root, contract.RAW_DIRNAME)
         for d in sorted(os.listdir(raw), reverse=True) if os.path.isdir(raw) else []:
-            c = contract.path_cookie(args.root, d)
+            c = contract.path_cookie(root, d)
             if os.path.exists(c):
                 cookie_path = c
                 break
@@ -268,14 +265,14 @@ def main():
         if not rec["in_archive"]:
             in_arch_bad.append(key)
 
-    if not args.no_links:
+    if not no_links:
         done = {}
         for it in entries:
             url = it.get("url") or ""
             if url not in done:
                 done[url] = probe(url, cookie)
                 link_stat[done[url]] = link_stat.get(done[url], 0) + 1
-                time.sleep(args.delay)
+                time.sleep(delay)
             it["link_status"] = done[url]
     else:
         for it in entries:
@@ -285,20 +282,19 @@ def main():
         json.dump(ext, f, ensure_ascii=False, indent=1)
 
     report = {
-        "date": args.date, "total": len(entries),
+        "date": date, "total": len(entries),
         "tiers": tiers, "tier_labels": contract.EXT_SOURCE_TIERS,
-        "link_status": link_stat if not args.no_links else "skipped",
+        "link_status": link_stat if not no_links else "skipped",
         "corroborated": n_corr,
         "in_archive_false": sorted(set(in_arch_bad)),
         "archive_pool": len(pool), "cookie": bool(cookie),
     }
-    with io.open(os.path.join(contract.day_dir(args.root, args.date), "ext_verify.json"),
+    with io.open(os.path.join(contract.day_dir(root, date), "ext_verify.json"),
                  "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)
 
-    if args.json:
-        print(json.dumps(report, ensure_ascii=False, indent=1))
-        return 0
+    if quiet:
+        return report
     print("复核 %d 条证据 | 归档池 %d 条原始结果 | cookie %s" % (
         len(entries), len(pool), "有" if cookie else "无"))
     print("信源等级:", {("%s·%s" % (k, contract.EXT_SOURCE_TIERS[k][:4])): v
@@ -310,12 +306,28 @@ def main():
             print("   ", u)
     else:
         print("归档核对: 全部 url 均出自当日检索结果")
-    if not args.no_links:
+    if not no_links:
         print("链接探活:", link_stat)
         dead = [it for it in entries if str(it.get("link_status")) not in ("200", "skipped")]
         for it in dead[:5]:
             print("   %-10s %s" % (it.get("link_status"), it.get("url")))
-    print("报告:", os.path.join(contract.day_dir(args.root, args.date), "ext_verify.json"))
+    print("报告:", os.path.join(contract.day_dir(root, date), "ext_verify.json"))
+    return report
+
+
+def main():
+    ap = argparse.ArgumentParser(description="发散证据事实性复核(信源门槛兜底/多源印证/链接探活)")
+    ap.add_argument("--root", default=os.getcwd())
+    ap.add_argument("--date", required=True)
+    ap.add_argument("--no-links", action="store_true", help="跳过链接探活(纯本地, 零请求)")
+    ap.add_argument("--delay", type=float, default=contract.EXT_LINK_DELAY)
+    ap.add_argument("--json", action="store_true", help="只输出机读报告")
+    args = ap.parse_args()
+    if args.json:
+        print(json.dumps(run(args.root, args.date, args.no_links, args.delay, quiet=True),
+                         ensure_ascii=False, indent=1))
+        return 0
+    run(args.root, args.date, args.no_links, args.delay)
     return 0
 
 

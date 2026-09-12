@@ -180,13 +180,13 @@ D=2026-08-09                              # 抓取日期
             (按 URL 对应!情绪判断必须自行阅读判断, 见约束二/三)
 4. 拓展:   **Agent Swarm 并行**: rank 1-10 各派 subagent 独立执行"读回答→发散搜索→产出发散点"
             (subagent 输出 schema 见"热点拓展板块", 必须遵守)
-4b.汇总:   python scripts/merge_extension.py --root %ROOT% --date %D%
-            → raw/<D>/extension.json(链式强校验: claim/evidence/takeaway + relation 值域 +
-              type 值域 / 同类型≤3 / 必填字段 / URL; 按链展平 items; 容忍旧扁平格式)
-4c.复核:   python scripts/verify_ext.py --root %ROOT% --date %D%
-            → 信源门槛兜底(A事实性/B待定/C不采信/D观点) + 多源印证(当日检索归档池 + 同源折叠)
-              + 链接探活 + 归档核对; 结果写回 extension.json 并另出报告 raw/<D>/ext_verify.json
-              (--no-links 可跳网络; 必须在 merge 之后跑, 重跑 merge 会清掉复核字段)
+4b.汇总+复核: python scripts/merge_extension.py --root %ROOT% --date %D%
+            → ① 链式强校验(claim/evidence/takeaway + relation 值域 + type 值域 + 同类型≤3 + URL)
+              并按链展平 items → 写 raw/<D>/extension.json
+            → ② **紧接着自动做事实性复核**(--no-verify 跳过; --no-links 不联网):
+              信源门槛兜底(A事实性/B待定/C不采信/D观点) + 多源印证(当日检索归档池 + 同源折叠)
+              + 链接探活 + 归档核对; 结果写回 extension.json 并另出 raw/<D>/ext_verify.json
+            (复核已与汇总合并, 不需要单独跑; verify_ext.py 仍保留, 供单独补跑/机读)
 5. 校验:   python scripts/check.py --root %ROOT% --date %D%     (零缺失才继续)
 6. 填表:   python scripts/fill_excel.py --root %ROOT% --date %D%
             → 跟进excel-YYYY-MM.xlsx(自动建模板;新日期 sheet 插最前;情绪列下拉 + 截断备注 + 热点拓展 sheet)
@@ -543,7 +543,7 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 38. **中文关键词的两个正则陷阱(都在信源门槛里实测踩到)**:
     ① **子串误命中**——裸写 `据称` 会把「CIA数**据称**其保留战前70%」判成匿名归属,把一条外媒引述错标成「不采信」。必须加否定环视:`(?<![数据根依论票证])据称`。
     ② **数字匹配过宽**——用裸数字(如 `60`)在检索归档池里找印证,一条证据能"匹配"出 **243** 个来源组,全是巧合。必须用**完整 token**(`60.2%`、`5839万`)匹配,且只采信"特异数字"(≥3 位,或带金额/百分比单位)。另外别用 `len(digit)>=2` 过滤锚点——那会把「定损**4万**至5万」这种一等锚点丢掉;`数字+多/余/约+单位`(`900多万元`)也要覆盖。
-39. **复核字段必须同时落到 `items` 与 `chains[].evidence`**:`verify_ext.py` 首次实现只给展平的 `items` 打标,而 Excel/HTML 渲染读的是 `chains[].evidence`——JSON 往返后二者是**不同对象**,结果交付物上等级标签数为 0,而话题库(读 items)却有等级。凡是"后处理打标"都要显式传播到全部引用位置。**另**:`verify_ext` 必须在 `merge_extension` **之后**跑,重跑 merge 会清掉复核字段。
+39. **复核字段必须同时落到 `items` 与 `chains[].evidence`**:`verify_ext.py` 首次实现只给展平的 `items` 打标,而 Excel/HTML 渲染读的是 `chains[].evidence`——JSON 往返后二者是**不同对象**,结果交付物上等级标签数为 0,而话题库(读 items)却有等级。凡是"后处理打标"都要显式传播到全部引用位置。**另**:复核已并入 `merge_extension`(写出后自动调用),不再存在忘记执行的失败点;单独补跑用 `verify_ext.py` 即可。
 
 ## 脚本清单(skill/scripts/,全流程通用)
 
@@ -561,7 +561,8 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 | `verify_html.py` | **约束四自动校验**(详情页数/折叠数/翻页/入口/索引/接口摘要/拓展范围),退出码 0 即通过 | `--root --date` |
 | `fill_excel.py` | 填月度 Excel(自动建模板、情绪列下拉、截断备注、热点拓展 sheet) | `--root --date --xlsx` |
 | `gen_html.py` | 生成 HTML 展示页(原文状态标签、热点拓展块) | `--root --date --out` |
-| `verify_ext.py` | **发散证据事实性复核**:信源门槛兜底打标(source_tier A/B/C/D)、多源印证(当日检索归档池 + 3-gram 同源折叠识别洗稿)、链接探活、归档核对(url 是否真出自检索结果);结果写回 extension.json, 报告写 `raw/<D>/ext_verify.json` | `--root --date [--no-links] [--delay] [--json]` |
+| `merge_extension.py` | **汇总 Swarm 产出 + 事实性复核(二合一)**:链式结构强校验(claim/evidence/takeaway、relation 值域)、按链展平 `items`、type 值域 / 同类型≤3 / URL、容忍旧的扁平 `items`、报告跨 rank 重复 URL;写出后**自动调用** `verify_ext.run()` 打信源等级/算多源印证/探活链接 | `--root --date [--ranks 1-10] [--no-strict] [--no-verify] [--no-links] [--link-delay]` |
+| `verify_ext.py` | **发散证据事实性复核**(通常由 merge 自动调用, 也可单独补跑):信源门槛兜底打标(A/B/C/D)、多源印证(当日检索归档池 + 3-gram 同源折叠识别洗稿)、链接探活、归档核对(url 是否真出自检索结果);结果写回 extension.json, 报告写 `raw/<D>/ext_verify.json` | `run(root, date, no_links, delay, quiet)` / CLI `--root --date [--no-links] [--delay] [--json]` |
 | `topic_lib.py` | 话题库维护(定位:避免重复搜索的 database;维度区隔 type=一级全局索引 / cat=二级受控标签 / date=首次收录 / last_seen=最近命中):update 增量收录(url 去重 + 日期回填 + 同类体检告警)+ search 查重与筛选(url/type/cat/tier/日期区间/关键词/主体)+ rebuild 重建 md + reindex 重建 sqlite + prune 全库一致性扫描 | `update --root --date` / `search --root --url\|--type\|--cat\|--tier\|--entity\|--since\|--until\|--keyword\|--json\|--adopted-only` / `rebuild --root` / `reindex --root` / `prune --root` |
 | `top2_select.py` | 可选工具:对已抓取的**全量** `answers_summary.json` 做瘦身,每问题保留「最高赞 + 最多评论」2 条,用于压缩 Agent 分析开销(现流程通常在抓取时就用 `--top N` 前置控制条数) | `--root --date [--backup]` |
 

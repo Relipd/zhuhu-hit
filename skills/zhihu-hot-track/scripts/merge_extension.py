@@ -249,6 +249,11 @@ def main():
     ap.add_argument("--force-overwrite", action="store_true",
                     help="--ranks 为子集时也整体重写输出(默认保留未处理 rank 的旧块, 防误覆盖丢失)")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--no-verify", action="store_true",
+                    help="跳过事实性复核(信源等级/多源印证/链接探活), 只汇总")
+    ap.add_argument("--no-links", action="store_true", help="复核时跳过链接探活(不联网)")
+    ap.add_argument("--link-delay", type=float, default=contract.EXT_LINK_DELAY,
+                    help="链接探活间隔秒")
     args = ap.parse_args()
 
     src = args.src or os.path.join(args.root, "ext_search", args.date)
@@ -331,6 +336,22 @@ def main():
         print(f"     rank{k}: {nch} 链 / {cnt} 条证据 {tc} | 未采用 {ndp} | {cat} | "
               f"thinking {'有' if has_th else '缺'}")
     print("     下一步: python scripts/topic_lib.py update --root <ROOT> --date <D>")
+
+    # 事实性复核(2026-09-12 与汇总合并, 少一个"忘记执行"的失败点):
+    # 必须在 extension.json 写出之后跑 —— 它按 url 给每条证据打信源等级、算多源印证、
+    # 探活链接, 并同步写回 items 与 chains[].evidence(交付物读后者)。
+    if not args.no_verify:
+        try:
+            import verify_ext
+            if not args.quiet:
+                print("\n===== 事实性复核(信源门槛 / 多源印证 / 链接探活) =====")
+            verify_ext.run(args.root, args.date, no_links=args.no_links,
+                           delay=args.link_delay, quiet=args.quiet)
+        except Exception as e:
+            print(f"[WARN] 复核未完成({type(e).__name__}: {e}); 汇总结果已写出, "
+                  f"可单独跑 verify_ext.py 补齐")
+    elif not args.quiet:
+        print("     (--no-verify: 已跳过事实性复核)")
 
 
 if __name__ == "__main__":
