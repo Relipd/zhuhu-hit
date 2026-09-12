@@ -126,6 +126,16 @@ def normalize_chains(chains, n, warnings, errors):
             ev = []
         if not takeaway:
             warnings.append(f"rank_{n}: chains[{ci}] 缺 takeaway(落点, HTML 会少一行结论)")
+        # 想法出处(可选): 提炼该想法的回答 → 附链接与序号, 便于读者回原答核对
+        src = ch.get("source")
+        norm_src = None
+        if isinstance(src, dict) and str(src.get("url") or "").startswith("http"):
+            norm_src = {"answer_index": src.get("answer_index"),
+                        "likes": src.get("likes"),
+                        "url": str(src["url"])}
+        elif src:
+            warnings.append(f"rank_{n}: chains[{ci}].source 格式不对(应为 "
+                            f"{{\"answer_index\":N,\"likes\":N,\"url\":\"http...\"}}), 已忽略")
         evs = []
         for i, it in enumerate(ev, 1):
             v = check_item(it, n, f"chains[{ci}].evidence[{i}]", errors)
@@ -136,7 +146,7 @@ def normalize_chains(chains, n, warnings, errors):
                 warnings.append(f"rank_{n}: chains[{ci}].evidence[{i}] 未标 relation, 默认「{v['relation']}」")
             v["claim"] = claim
             evs.append(v)
-        norm.append({"claim": claim, "takeaway": takeaway, "evidence": evs})
+        norm.append({"claim": claim, "takeaway": takeaway, "evidence": evs, "source": norm_src})
     return norm
 
 

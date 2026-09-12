@@ -8,7 +8,7 @@
 
 用法: python gen_html.py --root <工作根目录> --date 2026-08-08 [--out <输出根文件>]
 """
-import argparse, html, json, os
+import argparse, html, json, os, re
 
 import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(见 contract.py)
 
@@ -108,6 +108,9 @@ details.a-text div { background: #fafaf7; border: 1px solid var(--line); border-
 .chain { background: #fffdf6; border: 1px solid #e6dbc0; border-left: 3px solid var(--gold);
   border-radius: 8px; padding: 10px 14px 11px; margin: 0 0 10px; }
 .chain-claim { color: #6b5518; font-weight: 700; font-size: 13.5px; line-height: 1.6; margin-bottom: 6px; }
+.chain-claim a.src { color: var(--ink); font-weight: 400; font-size: 12px; text-decoration: none; }
+.chain-claim a.src:hover { text-decoration: underline; }
+details.think a { color: var(--ink); }
 .chain-no { display: inline-block; background: var(--gold); color: #fff; border-radius: 4px;
   padding: 1px 6px; font-size: 11.5px; margin-right: 7px; vertical-align: 1px; font-weight: 700; }
 .chain-ev { color: #444; font-size: 13px; line-height: 1.65; margin: 4px 0 4px 22px;
@@ -260,12 +263,23 @@ def main():
                     f'{html.escape(it["content"])}{link}{note}</div>')
 
         if chains:
-            # 结构化: 每条链 = 想法 → 证据(印证/反驳/边界) → 落点
+            # 结构化: 每条链 = 想法(可附原答链接) → 证据(印证/反驳/边界) → 落点
             for ci, ch in enumerate(chains, 1):
                 parts.append('<div class="chain">')
+                src = ch.get("source") or {}
+                src_link = ""
+                if src.get("url"):
+                    bits = []
+                    if src.get("answer_index"):
+                        bits.append(f"回答 {src['answer_index']}")
+                    if src.get("likes") not in (None, ""):
+                        bits.append(f"{src['likes']} 赞")
+                    label = "·".join(bits) or "原答"
+                    src_link = (f' <a class="src" href="{html.escape(src["url"])}"'
+                                f' target="_blank">［出处：{html.escape(label)}］</a>')
                 parts.append(f'<div class="chain-claim"><span class="chain-no">'
                              f'{contract.HTML_EXT_CLAIM_PREFIX} {ci}</span>'
-                             f'{html.escape(ch.get("claim", ""))}</div>')
+                             f'{html.escape(ch.get("claim", ""))}{src_link}</div>')
                 for it in ch.get("evidence", []):
                     parts.append(ev_html(it))
                 if ch.get("takeaway"):
@@ -277,8 +291,12 @@ def main():
             for it in e.get("items", []):
                 parts.append(ev_html(it))
         if e.get("thinking"):
+            # 思考过程里的裸链接直接变成可点击(否则读者没法顺着检索路径回源)
+            think = re.sub(r'(https?://[^\s，。；：）)]+)',
+                           r'<a href="\1" target="_blank">\1</a>',
+                           html.escape(e["thinking"]))
             parts.append('<details class="think"><summary>思考过程（检索路径与收敛依据）</summary>'
-                         f'<div>{html.escape(e["thinking"])}</div></details>')
+                         f'<div>{think}</div></details>')
         parts.append("</div>")
         return "".join(parts)
 

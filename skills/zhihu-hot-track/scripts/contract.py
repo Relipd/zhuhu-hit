@@ -99,6 +99,9 @@ EXT_CHAIN_FIELDS = ("claim", "evidence", "takeaway")
 EXT_RELATIONS = ("印证", "反驳", "边界")   # 证据对想法的关系; 边界=只在附加条件下成立
 EXT_RELATION_DEFAULT = "印证"
 EXT_RELATION_CSS = {"印证": "ok", "反驳": "no", "边界": "mid"}
+# 想法的出处(可选但推荐): 该想法提炼自哪条回答 → 直接把链接与序号附上去
+# {"answer_index": 3, "likes": 294, "url": "https://www.zhihu.com/question/.../answer/..."}
+EXT_CHAIN_SOURCE = "source"
 
 # ────────────────────────────── HTML 结构标记 ──────────────────────────────
 # 生成方(gen_html)与校验方(verify_html)共用,避免两侧各自硬编码而漂移

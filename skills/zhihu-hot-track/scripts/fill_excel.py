@@ -161,16 +161,29 @@ def main():
             chains = e.get("chains") or []
             if chains:
                 # 链式: 每个想法一行标题(扩展类型=想法), 其下证据行带「印证/反驳/边界」, 末尾一行落点
+                # 有链接就附上: 想法行填「提炼该想法的回答」链接, 落点行填本链全部来源链接。
                 for ch in chains:
+                    src = ch.get("source") or {}
+                    labels = []
+                    if src.get("answer_index"):
+                        labels.append("回答 %s" % src["answer_index"])
+                    if src.get("likes") not in (None, ""):
+                        labels.append("%s 赞" % src["likes"])
+                    src_note = ("出处：" + "·".join(labels)) if src.get("url") else ""
                     new_rows.append([args.date, int(rank_str), e["title"], "想法",
-                                     ch.get("claim", ""), "", "", ch.get("claim", ""), ""])
+                                     ch.get("claim", ""), src.get("url", ""), src_note,
+                                     ch.get("claim", ""), ""])
                     for it in ch.get("evidence", []):
                         new_rows.append([args.date, int(rank_str), e["title"], it["type"], it["content"],
                                          it.get("url", ""), it.get("note", ""),
                                          ch.get("claim", ""), it.get("relation", "")])
                     if ch.get("takeaway"):
+                        # 落点行附本链全部来源(多个链接换行分隔), 便于顺着结论回看证据
+                        ev_urls = [it.get("url", "") for it in ch.get("evidence", []) if it.get("url")]
                         new_rows.append([args.date, int(rank_str), e["title"], "落点",
-                                         ch["takeaway"], "", "", ch.get("claim", ""), ""])
+                                         ch["takeaway"], "\n".join(ev_urls),
+                                         "本链来源 %d 条" % len(ev_urls) if ev_urls else "",
+                                         ch.get("claim", ""), ""])
             else:
                 # 兼容历史格式(无 chains): 扁平条目
                 for it in e.get("items", []):
@@ -188,7 +201,7 @@ def main():
                 c.border = BORDER
                 c.alignment = Alignment(vertical="top", wrap_text=True)
             u = ext_sheet.cell(row=ext_sheet.max_row, column=6)
-            if r[5]:
+            if r[5] and "\n" not in str(r[5]):     # 多个链接的单元格(落点行)不做超链接, 避免指向无效地址
                 u.hyperlink = r[5]
         for i, w in enumerate([11, 6, 36, 10, 52, 36, 18, 40, 8], 1):
             ext_sheet.column_dimensions[get_column_letter(i)].width = w
