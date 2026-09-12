@@ -411,7 +411,8 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 | `fill_excel.py` | 填月度 Excel(自动建模板、情绪列下拉、截断备注、热点拓展 sheet) | `--root --date --xlsx` |
 | `gen_html.py` | 生成 HTML 展示页(原文状态标签、热点拓展块) | `--root --date --out` |
 | `topic_lib.py` | 话题库双轨维护:update 增量收录(extension→index.json,url 去重)+ search 查重(url/关键词/分类)+ rebuild 重建 md + prune 移除当日已删条目 | `update --root --date` / `search --root --url\|--keyword\|--cat` / `rebuild --root` / `prune --root --date` |
-| `api_fetch.py` | **仓库既有,已被 `question_fetch.py` 取代**(API 直拉思路的最早实现:每问题 2 次调用、选 top2=最高赞+最多评论)。保留作参考;新流程请用 `question_fetch.py`(并集 + 覆盖度 + 类型适配)。二者不要在同一次运行中先后使用 | `--root --date --cookie` |
-| `top2_select.py` | **仓库既有,可选工具**:对已抓取的**全量** `answers_summary.json` 做瘦身,每问题保留「最高赞 + 最多评论」2 条,用于压缩 Agent 分析开销(现流程通常在抓取时就用 `--top N` 前置控制条数) | `--root --date [--backup]` |
+| `top2_select.py` | 可选工具:对已抓取的**全量** `answers_summary.json` 做瘦身,每问题保留「最高赞 + 最多评论」2 条,用于压缩 Agent 分析开销(现流程通常在抓取时就用 `--top N` 前置控制条数) | `--root --date [--backup]` |
+
+> **历史说明**:早期版本曾用 `api_fetch.py`(API 直拉 + top2 = 最高赞 + 最多评论)作为抓取首选。其职能已由 `question_fetch.py` **完全取代**,且后者更强(并集召回 web ∪ search、覆盖度标注 `total_answers/coverage/source`、Question/Article/Answer 三类条目适配),该脚本已移除;如需查阅可看 git 历史。**现行流程只有一条抓取链**:`run.py`(关键词搜索召回,作兜底)→ `question_fetch.py`(问题维度并集,主数据源)。
 
 所有脚本路径全参数化(`--root` 默认当前目录),不写死任何绝对路径;日期目录 `raw/<D>/` 自动创建。分析步骤(analysis.json)由 Agent 完成,脚本负责抓取/校验/产出。
