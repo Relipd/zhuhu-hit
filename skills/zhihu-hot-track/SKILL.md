@@ -35,6 +35,31 @@ description: 仅在用户键入 /zhihu-hot-track 斜杠命令(知乎热榜每日
 
 **自检命令**:`python scripts/doctor.py [--root <ROOT>] [--date <D>]` 一次性检查运行时、脚本完整性、基础栈(CLI 路径/版本/凭证/skill 版本)、ROOT 与当日数据;`--discover` 自动发现候选 ROOT;`--json` 供机读。
 
+## 脚本间契约:`scripts/contract.py`(改约定的唯一入口)
+
+十余个脚本靠**约定好的文件名与字段**接力(`hot.json` → `answers_summary.json` → `analysis.json` → `extension.json` → Excel/HTML)。这些约定曾以字面量散落在各脚本里(`"hot.json"` 出现在 6 个脚本、情绪三值出现在 4 个、HTML 结构标记出现在 2 个),改一处要改多个文件,漏改**不报错**、只在运行期表现为「文件找不到」或「校验莫名失败」。
+
+现在约定收敛到 `scripts/contract.py`——**唯一定义处**,只放常量与路径函数,无业务逻辑:
+
+| 契约内容 | 常量/函数 | 谁在用 |
+|---|---|---|
+| 当日产物文件名 | `FILE_HOT/FILE_ANSWERS/FILE_ANALYSIS/FILE_EXTENSION/FILE_COOKIE`、`path_hot/path_answers/path_analysis/path_extension/path_cookie`、`day_dir` | 全部脚本 |
+| 榜单结构 | `HOT_ITEMS_PATH`(`hot.json` 里条目数组的位置) | run / check / doctor / question_fetch / verify_html |
+| 回答与分析字段 | `ANS_FIELDS`、`ANS_META_FIELDS`、`CONTENT_STATUS`、`ANALYSIS_FIELDS` | check / fill_excel / gen_html |
+| 情绪值域 | `EMOTIONS`、`EMOTION_CSS_CLASS` | check(值域校验)/ fill_excel(下拉)/ gen_html(统计与配色) |
+| 拓展契约 | `EXT_TYPES`、`EXT_MAX_PER_TYPE`、`EXT_REQUIRED`、`EXT_CONTENT_LEN` | merge_extension / topic_lib |
+| 交付物命名 | `REPORT_TITLE`、`XLSX_PREFIX`、`report_name/report_entry/report_pages_dir`、`page_name/page_path`、`xlsx_name/xlsx_path/xlsx_glob`、`lib_dir/lib_index/lib_md` | gen_html / verify_html / fill_excel / topic_lib / doctor |
+| HTML 结构标记 | `HTML_ANSWER_DETAIL_CLASS`、`HTML_TEXT_DETAIL_CLASS`、`HTML_SUMMARY_TAG`、`HTML_EXT_MARK` | gen_html(生成)↔ verify_html(校验) |
+
+**两条硬规则**:
+
+1. **新增脚本不得再写上述字面量**,一律 `import contract` 取用(脚本与 `contract.py` 同目录,`import contract` 直接可用;带 `sys.path` 适配层的脚本把 import 放在 `zhihu_env` 旁)。
+2. **`raw/<日期>/` 下的文件名不许改**:历史数据依赖 `hot.json` / `answers_summary.json` / `analysis.json` / `extension.json` / `cookies.txt`,改名等于放弃向后兼容,须另写迁移脚本。契约层让改名**只需改一处**,但不代表可以随意改。
+
+**换主题/换平台时改哪里**:换交付物命名或字段约定 → 只改 `contract.py`;换采集平台(不再用知乎开放平台)→ 改 `zhihu_env.py` + `run.py`/`question_fetch.py`/`fulltext.py`,其余脚本(check / fill_excel / gen_html / verify_html / merge_extension / topic_lib)只处理「榜单条目 + 回答 + 分析 + 拓展」这套与平台无关的结构,**不受影响**。
+
+**回归方式(改任何脚本后照此验证)**:在临时 ROOT 里复制 `raw/<D>/` 与 `话题库/` 重跑全链路(`check` → `gen_html` → `verify_html` → `fill_excel` → `topic_lib`),把产出与既有交付物**逐字节比对**(根入口 / 各详情页 / `话题库.md` / Excel 单元格);仅当差异来自数据本身(如既有 HTML 早于 `extension.json` 最后一次写入)才算通过。
+
 ## Step 1: 前期准备(依赖 · token · 关键信息 · 需求跟进)
 
 **信息最小原则(本步一切取证的准则)**:本流程只依赖**两项凭证**(开放平台 Access Secret、网页登录 Cookie)和**两个参数**(ROOT、D,均有默认值)。向用户索取的信息仅限缺失项:能自检就不问(已有凭证先验证),能自动获取就不让用户动手(方式 A),缺哪样才问哪样,一概不多要。
@@ -51,7 +76,7 @@ description: 仅在用户键入 /zhihu-hot-track 斜杠命令(知乎热榜每日
 - **凭证定向(信息最小——只认这两样,各有各的出处,互不替代)**:
   - **开放平台 Access Secret(CLI 抓取用)**:出处 = 知乎开放平台控制台(open.zhihu.com → 登录 → 开放平台 → 应用管理,应用凭证含 Client ID 与 Access Secret)。仅当 `zhihu-cli auth list` 为空或调用报 AUTH_INVALID 时才向用户索取,且**只索取 Access Secret 一项**,不涉及 API key、权限位申请等任何多余字段。注入一律用坑 1 的无换行方式(`cmd /c "echo|set /p=<secret>|<cli> auth set --secret-stdin"`);AUTH_INVALID 基本都因换行,而非 Secret 本身无效。此凭证**不适用于网页登录**(坑 12)。
   - **网页登录 Cookie(全文解锁用)**:出处 = Step 1.2 方式 A(playwright + Edge 弹窗扫码,自动提取)或兜底方式 B。此凭证**不适用于 CLI 抓取**;与 Access Secret 两套并存、互不替代,检测时分别验证,缺哪个补哪个,齐了就不再多问。
-- **脚本**:skill 的 `scripts/` 目录齐全(run.py / fulltext.py / search_many.py / check.py / merge_extension.py / verify_html.py / fill_excel.py / gen_html.py / topic_lib.py)。
+- **脚本**:skill 的 `scripts/` 目录齐全(contract.py / run.py / fulltext.py / search_many.py / check.py / merge_extension.py / verify_html.py / fill_excel.py / gen_html.py / topic_lib.py / question_fetch.py / doctor.py / zhihu_env.py)。
 - **playwright-cli(必要,主要手段)**:仓库在 `D:\claude code\playwright-cli`,调用方式 `Set-Location D:\claude code\playwright-cli; node playwright-cli.js <命令>`;skill 文档已装于 `.claude\skills\playwright-cli`。**Cookie 获取的唯一主手段**(Step 1.2 方式 A),仅当它不可用时才回退方式 B(F12 手动)。`open` 一律 `--browser=msedge`——Edge 是唯一验证可用的通道(本机 Chrome 通道 spawn 被 EACCES 拦截,疑似杀软,不要尝试 Chrome)。先 `cd` 到仓库目录再执行,命令生成的快照会写到仓库 `.playwright-cli/`。
 
 ### 1.2 网页登录 Cookie(懒加载:默认复用,失败才获取)
@@ -363,7 +388,7 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 - Excel「热点拓展」sheet:日期 | 排名 | 问题标题 | 扩展类型(案例/人物/链路/思考过程)| 扩展内容 | 来源链接 | 备注;最新日期块在最上,跨日期自动累积。
 - 范围硬约束:**只处理热榜前 10**,第 11-20 名不扩展(主流程四维分析照常覆盖全部 20)。
 
-## 踩过的坑(1-29,勿重蹈)
+## 踩过的坑(1-32,勿重蹈)
 
 1. **PS 5.1 管道换行 → AUTH_INVALID**:`"secret" | zhihu-cli auth set --secret-stdin` 会追加换行导致服务端校验失败(Secret 本身有效)。用 `cmd /c "echo|set /p=<secret>|<cli> auth set --secret-stdin"` 无换行传入。
 2. **无 BOM UTF-8 ps1 在 PS 5.1 报语法错误**:官方脚本(run.ps1/setup.ps1)含中文注释,需转存为带 BOM 的 UTF-8 才能被 PS 5.1 解析。
@@ -394,11 +419,15 @@ CLI 路径:环境变量 ZHIHU_CLI 优先,否则默认 %LOCALAPPDATA%\ZhihuCLI\cu
 27. **`order_by=voteup` 并不按赞降序, 单页也不含全部最热**:实测与 `default` 同序;2026-09-11 的 rank4 那条 17503 赞回答**不在网页首 20 条内**,只有搜索召回拿到过它。因此必须三管齐下:① 在返回集合内**自行按 `voteup_count` 排序**;② `--pages` 多取几页;③ 与搜索召回取**并集**而不是二选一(并集正是把 rank1 从 51 赞提到 780 赞的关键)。
 28. **发散搜索最容易退化成「名词解释」**:subagent 在找不到具体事实时,会本能地搜 `X是什么` / `X定义` / `X科普` 去"补背景",产出正确的废话。用户 2026-09-11 明令禁止(约束五):查询词必须含**具体主体/时间/数字/事件名**,背景一律用**过往案例与可核数据**支撑。主 Agent 汇总前抽查 `queries_rank_<n>.json` 与逐轮归档,发现命中即要求重发。
 29. **`merge_extension.py` 的局部运行会整体覆盖输出**:实测 subagent 为自校验跑 `--ranks 9-10`,使 `raw/<D>/extension.json` 只剩 3 个 rank(其余 rank 的块全丢)。现已加固:当 `--ranks` 为子集且输出文件已存在时,**默认保留未处理 rank 的旧块**并发出警告,整体重写需显式 `--force-overwrite`。规范做法仍是:**等所有 rank 落盘后跑一次全量 merge**。
+30. **约定散落多处 ⇒ 漏改不报错,只在运行期现形**:`"hot.json"` 曾出现在 6 个脚本、情绪三值出现在 4 个、HTML 标记出现在生成与校验两侧。漏改的表现是「文件找不到」或「校验莫名失败」,而非报错。现全部收敛到 `scripts/contract.py`(见「脚本间契约」一节);**新增脚本禁止再写这些字面量**。
+31. **`fill_excel.py` 的热点拓展表会逐次累积重复表头**:旧写法 `delete_rows(2, max_row)` 只清数据行、保留第 1 行旧表头,`append(EXT_HEADERS)` 又把新表头写到第 2 行;更糟的是下次运行时那行残留表头首列是「日期」≠ 当日,被当作"其他日期的数据行"再保留一次——实测 2026-09 表里积了 4 行重复表头。现改为**先清空整表(含表头)再写表头**,并过滤首列为空或为「日期」的旧行。教训:凡是「保留旧行 + 重写当前日期」的表格操作,必须把**表头行本身**排除在"旧数据行"之外。
+32. **PS 5.1 按 ANSI 读无 BOM 的 .ps1**:含中文的临时回归脚本若存成无 BOM UTF-8,`powershell -File` 会以 GBK 解码,报 `Unexpected token` 而非执行。用 `[IO.File]::WriteAllText($p,$s,(New-Object Text.UTF8Encoding($true)))` 存带 BOM 版本(与坑 2 同源);或直接改用 Python 写回归脚本。
 
 ## 脚本清单(skill/scripts/,全流程通用)
 
 | 脚本 | 职责 | 关键参数 |
 |---|---|---|
+| `contract.py` | **流程数据契约层**:文件名/目录布局/字段名/值域/HTML 结构标记的**单一定义处**,供全部脚本 import;无业务逻辑 | 作为模块:`path_*()` / `report_*()` / `page_name()` / `EMOTIONS` / `ANALYSIS_FIELDS` / `EXT_*` / `HTML_*` |
 | `zhihu_env.py` | **基础技术栈适配层**:统一解析 CLI 路径(`ZHIHU_CLI` → `ZHIHU_CLI_HOME` → 平台默认 → 兜底问 zhihu skill 的 status)与凭证库状态;被所有业务脚本 import | 作为模块:`require_cli()` / `diagnose()` / `keychain_present()` / `skill_status()` |
 | `doctor.py` | **环境与数据自检**:运行时/脚本完整性/基础栈(CLI+凭证+skill 版本)/ROOT/当日数据;`--discover` 自动发现候选 ROOT | `--root --date --discover --json` |
 | `run.py` | 热榜 + 变体搜索 + 合并去重(关键词召回, 作兜底数据源) | `--root --date --limit --variants --resume` |

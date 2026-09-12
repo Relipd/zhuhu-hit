@@ -32,10 +32,11 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import contract   # noqa: E402  数据契约:文件名 / 字段 / 值域的单一定义处
 import zhihu_env  # noqa: E402
 
-REQUIRED_SCRIPTS = ["run.py", "fulltext.py", "search_many.py", "check.py",
-                    "merge_extension.py", "verify_html.py", "fill_excel.py",
+REQUIRED_SCRIPTS = ["contract.py", "run.py", "question_fetch.py", "fulltext.py", "search_many.py",
+                    "check.py", "merge_extension.py", "verify_html.py", "fill_excel.py",
                     "gen_html.py", "topic_lib.py", "zhihu_env.py"]
 SKIP_DIRS = {"windows", "$recycle.bin", "system volume information", "node_modules",
              "appdata", "temp", "tmp", ".git", ".cache", "__pycache__",
@@ -44,6 +45,7 @@ SKIP_DIRS = {"windows", "$recycle.bin", "system volume information", "node_modul
 
 def discover_roots(depth=2, extra_bases=None):
     """在常见位置寻找候选工作根目录(含 话题库/index.json 或 跟进excel-*.xlsx)。"""
+
     bases = []
     env = os.environ.get("ZHIHU_TRACK_ROOTS")
     if env:
@@ -69,8 +71,9 @@ def discover_roots(depth=2, extra_bases=None):
                 dirs[:] = []
             else:
                 dirs[:] = [d for d in dirs if d.lower() not in SKIP_DIRS and not d.startswith(".")]
-            is_root = (os.path.exists(os.path.join(root, "话题库", "index.json"))
-                       or any(f.startswith("跟进excel-") and f.endswith(".xlsx") for f in files))
+            is_root = (os.path.exists(contract.lib_index(root))
+                       or any(f.startswith(contract.XLSX_PREFIX + "-") and f.endswith(".xlsx")
+                              for f in files))
             if is_root:
                 found.append(root)
                 dirs[:] = []
@@ -167,13 +170,34 @@ def check_scripts(rep):
     else:
         rep.ok("skill 脚本完整性", f"{len(REQUIRED_SCRIPTS)} 个脚本齐备")
 
+    # 契约层自检:路径构造必须与常量自洽(改常量时若忘了改函数, 这里先炸)
+    probe = contract.day_dir("X", "2026-09-12")
+    want = os.path.join("X", contract.RAW_DIRNAME, "2026-09-12")
+    pairs = [
+        (contract.path_hot("X", "2026-09-12"), os.path.join(probe, contract.FILE_HOT)),
+        (contract.path_answers("X", "2026-09-12"), os.path.join(probe, contract.FILE_ANSWERS)),
+        (contract.path_analysis("X", "2026-09-12"), os.path.join(probe, contract.FILE_ANALYSIS)),
+        (contract.path_extension("X", "2026-09-12"), os.path.join(probe, contract.FILE_EXTENSION)),
+        (contract.path_cookie("X", "2026-09-12"), os.path.join(probe, contract.FILE_COOKIE)),
+        (contract.report_entry("X", "2026-09-12"),
+         os.path.join("X", contract.REPORT_TITLE + "-2026-09-12.html")),
+        (contract.page_path("X", "2026-09-12", 3),
+         os.path.join("X", contract.REPORT_TITLE + "-2026-09-12", contract.page_name(3))),
+        (probe, want),
+    ]
+    bad = [f"{a!r} != {b!r}" for a, b in pairs if a != b]
+    if bad:
+        rep.fail("契约层自检", "; ".join(bad[:3]))
+    else:
+        rep.ok("契约层自检", f"路径构造自洽(情绪值域 {len(contract.EMOTIONS)} 值 / 分析字段 {len(contract.ANALYSIS_FIELDS)} 项 / 拓展类型 {len(contract.EXT_TYPES)} 类)")
+
 
 def check_root(rep, root, date=None):
     if not os.path.isdir(root):
         rep.fail("ROOT 存在性", root)
         return
     rep.ok("ROOT", root)
-    lib = os.path.join(root, "话题库", "index.json")
+    lib = contract.lib_index(root)
     if os.path.exists(lib):
         try:
             n = len(json.load(io.open(lib, encoding="utf-8")).get("items", []))
@@ -183,40 +207,45 @@ def check_root(rep, root, date=None):
     else:
         rep.warn("话题库", "尚未建立(首次运行会自动创建)")
 
-    xl = sorted(glob.glob(os.path.join(root, "跟进excel-*.xlsx")))
+    xl = sorted(glob.glob(contract.xlsx_glob(root)))
     rep.ok("月度 Excel", ", ".join(os.path.basename(p) for p in xl) if xl else "尚无(首次填表会新建)")
 
     if not date:
         return
-    day = os.path.join(root, "raw", date)
+    tag = f"{contract.RAW_DIRNAME}/{date}"
+    day = contract.day_dir(root, date)
     if not os.path.isdir(day):
-        rep.warn(f"raw/{date}", "不存在(该日期尚未抓取)")
+        rep.warn(tag, "不存在(该日期尚未抓取)")
         return
-    expect = {"hot.json": None, "answers_summary.json": None, "analysis.json": None, "extension.json": None}
+    # 期望的当日产物(顺序即检查顺序, 名字与字段全部来自契约)
+    expect = (contract.FILE_HOT, contract.FILE_ANSWERS, contract.FILE_ANALYSIS, contract.FILE_EXTENSION)
     for name in expect:
         p = os.path.join(day, name)
         if not os.path.exists(p):
-            rep.warn(f"raw/{date}/{name}", "缺失")
+            rep.warn(f"{tag}/{name}", "缺失")
             continue
         try:
             d = json.load(io.open(p, encoding="utf-8-sig"))
-            if name == "hot.json":
-                detail = f"{len(d['Data']['Items'])} 条热榜"
-            elif name == "answers_summary.json":
+            if name == contract.FILE_HOT:
+                node = d
+                for key in contract.HOT_ITEMS_PATH:
+                    node = node[key]
+                detail = f"{len(node)} 条热榜"
+            elif name == contract.FILE_ANSWERS:
                 detail = f"{len(d)} 问题 / {sum(len(s['answers']) for s in d)} 回答"
-            elif name == "analysis.json":
+            elif name == contract.FILE_ANALYSIS:
                 detail = f"{len(d)} 问题已分析"
             else:
                 detail = f"{len(d)} rank / {sum(len(v['items']) for v in d.values())} 发散点"
-            rep.ok(f"raw/{date}/{name}", detail)
+            rep.ok(f"{tag}/{name}", detail)
         except Exception as e:
-            rep.fail(f"raw/{date}/{name}", f"解析失败: {e}")
+            rep.fail(f"{tag}/{name}", f"解析失败: {e}")
 
-    ck = os.path.join(day, "cookies.txt")
+    ck = contract.path_cookie(root, date)
     if os.path.exists(ck):
-        rep.ok(f"raw/{date}/cookies.txt", "存在 -> 直接复用(不验证、不删除; 仅失败时刷新)")
+        rep.ok(f"{tag}/{contract.FILE_COOKIE}", "存在 -> 直接复用(不验证、不删除; 仅失败时刷新)")
     else:
-        rep.warn(f"raw/{date}/cookies.txt",
+        rep.warn(f"{tag}/{contract.FILE_COOKIE}",
                  "不存在 -> 先按无 Cookie 运行; 若 truncated+summary 占比 >20% 再按 Step 1.2 获取")
 
 

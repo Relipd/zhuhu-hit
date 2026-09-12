@@ -18,16 +18,18 @@ gen_html.py 只负责生成, 不校验; 历史上靠 Agent 临时手写 PowerShe
 """
 import argparse, io, json, os, re, sys
 
+import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(见 contract.py)
+
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
 
-RE_DETAIL_ANSWER = re.compile(r'<details class="a">')
+RE_DETAIL_ANSWER = re.compile(r'<details class="%s">' % re.escape(contract.HTML_ANSWER_DETAIL_CLASS))
 RE_PREV = re.compile(r'<a class="(?:off)?" href="([^"]*)">← 上一题</a>')
 RE_NEXT = re.compile(r'<a class="(?:off)?" href="([^"]*)">下一题 →</a>')
-RE_SUMMARY_TAG = re.compile(r"接口摘要")
+RE_SUMMARY_TAG = re.compile(re.escape(contract.HTML_SUMMARY_TAG))
 RE_INDEX_CARD = re.compile(r'q(\d{2})\.html')
 
 
@@ -38,11 +40,11 @@ def main():
     args = ap.parse_args()
 
     root, d = args.root, args.date
-    entry = os.path.join(root, f"知乎热榜跟进-{d}.html")
-    pages_dir = os.path.join(root, f"知乎热榜跟进-{d}")
-    idx = os.path.join(pages_dir, "index.html")
-    hot_path = os.path.join(root, "raw", d, "hot.json")
-    sum_path = os.path.join(root, "raw", d, "answers_summary.json")
+    entry = contract.report_entry(root, d)
+    pages_dir = contract.report_pages_dir(root, d)
+    idx = os.path.join(pages_dir, contract.HTML_INDEX_NAME)
+    hot_path = contract.path_hot(root, d)
+    sum_path = contract.path_answers(root, d)
 
     results = []
 
@@ -52,7 +54,7 @@ def main():
     # 前置数据
     hot = json.load(io.open(hot_path, encoding="utf-8-sig"))
     summary = json.load(io.open(sum_path, encoding="utf-8"))
-    total = len(hot["Data"]["Items"])
+    total = len(hot[contract.HOT_ITEMS_PATH[0]][contract.HOT_ITEMS_PATH[1]])
     answers_of = {int(s["rank"]): len(s["answers"]) for s in summary}
     not_full = sum(1 for s in summary for a in s["answers"] if a.get("content_status") != "full")
 
@@ -64,7 +66,7 @@ def main():
         entry_html = io.open(entry, encoding="utf-8").read()
         m = re.search(r'http-equiv="refresh"[^>]*url=([^"\'>]+)', entry_html, re.I)
         target = (m.group(1).strip() if m else "")
-        want = f"知乎热榜跟进-{d}/index.html"
+        want = f"{contract.report_name(d)}/{contract.HTML_INDEX_NAME}"
         check("根入口跳转路径", target.endswith(want), f"实际={target!r} 期望以 {want!r} 结尾")
 
     # 2. 目录与索引
@@ -74,14 +76,14 @@ def main():
     # 3. 详情页数与连续性
     pages = sorted(f for f in os.listdir(pages_dir) if re.fullmatch(r"q\d+\.html", f)) if os.path.isdir(pages_dir) else []
     check("详情页数 == 热榜条数", len(pages) == total, f"{len(pages)} vs {total}")
-    want_names = [f"q{i:02d}.html" for i in range(1, total + 1)]
+    want_names = [contract.page_name(i) for i in range(1, total + 1)]
     missing = [n for n in want_names if n not in pages]
     check("详情页无缺号", not missing, f"缺失: {missing}")
 
     # 4~5. 逐页折叠数与翻页
     bad_details, bad_paging, detail_err = [], [], []
     for i in range(1, total + 1):
-        p = os.path.join(pages_dir, f"q{i:02d}.html")
+        p = contract.page_path(root, d, i)
         if not os.path.exists(p):
             continue
         html = io.open(p, encoding="utf-8").read()
@@ -92,8 +94,8 @@ def main():
         mp, mn = RE_PREV.search(html), RE_NEXT.search(html)
         prev_href = mp.group(1) if mp else "<无链接>"
         next_href = mn.group(1) if mn else "<无链接>"
-        want_prev = f"q{i-1:02d}.html" if i > 1 else "#"
-        want_next = f"q{i+1:02d}.html" if i < total else "#"
+        want_prev = contract.page_name(i - 1) if i > 1 else "#"
+        want_next = contract.page_name(i + 1) if i < total else "#"
         if prev_href != want_prev:
             bad_paging.append(f"q{i:02d} 上一题={prev_href} 应为 {want_prev}")
         if next_href != want_next:
@@ -112,7 +114,7 @@ def main():
     # 7. 接口摘要标签
     n_tag = 0
     for i in range(1, total + 1):
-        p = os.path.join(pages_dir, f"q{i:02d}.html")
+        p = contract.page_path(root, d, i)
         if os.path.exists(p):
             n_tag += len(RE_SUMMARY_TAG.findall(io.open(p, encoding="utf-8").read()))
     check("接口摘要标签数 == 非 full 回答数", n_tag == not_full,
@@ -122,11 +124,11 @@ def main():
     # 注: 页脚含「热点拓展仅覆盖热榜前 10」说明文字, 故用「热点拓展思考」标题判定而非「热点拓展」
     scope_bad = []
     for i in range(1, total + 1):
-        p = os.path.join(pages_dir, f"q{i:02d}.html")
+        p = contract.page_path(root, d, i)
         if not os.path.exists(p):
             continue
         html = io.open(p, encoding="utf-8").read()
-        has_block = "热点拓展思考" in html
+        has_block = contract.HTML_EXT_MARK in html
         if i <= 10 and not has_block:
             scope_bad.append(f"q{i:02d} 缺拓展块")
         if i > 10 and has_block:

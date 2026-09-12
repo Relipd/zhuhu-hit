@@ -7,6 +7,8 @@
 """
 import argparse, json, os, sys
 
+import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(见 contract.py)
+
 # Windows 中文控制台默认 GBK: 直接 print "✓" 等非 GBK 字符会抛
 # UnicodeEncodeError 并以退出码 1 结束, 让"校验通过"看起来像"校验失败"(坑 19)。
 # 这里强制 UTF-8 输出并对不可编码字符降级, 保证退出码只反映校验结果。
@@ -16,7 +18,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-JUDGES = {"积极", "中立", "消极"}
+JUDGES = set(contract.EMOTIONS)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -24,13 +26,16 @@ def main():
     ap.add_argument("--date", required=True, help="YYYY-MM-DD")
     args = ap.parse_args()
 
-    day = os.path.join(args.root, "raw", args.date)
-    hot = json.load(open(os.path.join(day, "hot.json"), encoding="utf-8-sig"))
-    summary = json.load(open(os.path.join(day, "answers_summary.json"), encoding="utf-8"))
-    an = json.load(open(os.path.join(day, "analysis.json"), encoding="utf-8"))
+    hot = json.load(open(contract.path_hot(args.root, args.date), encoding="utf-8-sig"))
+    summary = json.load(open(contract.path_answers(args.root, args.date), encoding="utf-8"))
+    an = json.load(open(contract.path_analysis(args.root, args.date), encoding="utf-8"))
+
+    items = hot
+    for _k in contract.HOT_ITEMS_PATH:
+        items = items[_k]
 
     problems = []
-    if len(hot["Data"]["Items"]) == 0:
+    if len(items) == 0:
         problems.append("热榜为空")
 
     total = 0
@@ -55,7 +60,7 @@ def main():
             if i - 1 >= len(q["answers"]):
                 continue
             A = q["answers"][i - 1]
-            for k in ("stance", "approach", "logic", "emotion", "judge"):
+            for k in contract.ANALYSIS_FIELDS:
                 v = A.get(k)
                 if not v or v == "MISSING":
                     problems.append(f"#{s['rank']}-回答{i} 分析字段[{k}]缺失")

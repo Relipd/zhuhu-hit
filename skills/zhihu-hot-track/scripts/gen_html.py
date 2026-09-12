@@ -10,7 +10,9 @@
 """
 import argparse, html, json, os
 
-JUDGE_CLS = {"积极": "pos", "中立": "neu", "消极": "neg"}
+import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(见 contract.py)
+
+JUDGE_CLS = contract.EMOTION_CSS_CLASS   # 情绪 -> 配色 class(与 verify_html 共用同一值域)
 CSS = """
 :root {
   --ink: #1f3a5f; --paper: #f5f3ee; --card: #ffffff; --line: #e8e4da;
@@ -117,7 +119,8 @@ footer { text-align: center; color: #9b978c; font-size: 12.5px; padding: 24px; }
 """
 
 def jc_stats(summary, an):
-    jc = {"积极": 0, "中立": 0, "消极": 0}
+    # 情绪统计口径由契约定义(与 Excel 下拉、verify_html 校验同源)
+    jc = {e: 0 for e in contract.EMOTIONS}
     for s in summary:
         for i, _ in enumerate(s["answers"]):
             jc[an[str(s["rank"])]["answers"][i]["judge"]] += 1
@@ -127,7 +130,8 @@ def mbar_html(jc, total, w=6):
     if total == 0:
         return '<div class="mbar"><i style="width:100%;background:var(--neu)"></i></div>'
     parts = []
-    for key, color in (("积极", "var(--pos)"), ("中立", "var(--neu)"), ("消极", "var(--neg)")):
+    for key in contract.EMOTIONS:
+        color = f"var(--{contract.EMOTION_CSS_CLASS[key]})"
         if jc[key]:
             parts.append(f'<i style="width:{jc[key] * 100 // total}%;background:{color}"></i>')
     return f'<div class="mbar">{"".join(parts)}</div>'
@@ -139,16 +143,15 @@ def main():
     ap.add_argument("--out", default=None, help="输出根文件(默认 <root>/知乎热榜跟进-<date>.html)")
     args = ap.parse_args()
 
-    day = os.path.join(args.root, "raw", args.date)
-    summary = json.load(open(os.path.join(day, "answers_summary.json"), encoding="utf-8"))
-    an = json.load(open(os.path.join(day, "analysis.json"), encoding="utf-8"))
-    ext_path = os.path.join(day, "extension.json")
+    summary = json.load(open(contract.path_answers(args.root, args.date), encoding="utf-8"))
+    an = json.load(open(contract.path_analysis(args.root, args.date), encoding="utf-8"))
+    ext_path = contract.path_extension(args.root, args.date)
     ext = json.load(open(ext_path, encoding="utf-8")) if os.path.exists(ext_path) else {}
 
-    out = args.out or os.path.join(args.root, f"知乎热榜跟进-{args.date}.html")
+    out = args.out or contract.report_entry(args.root, args.date)
     pages_dir = out.rsplit(".", 1)[0]  # <root>/知乎热榜跟进-<date>/  目录
     os.makedirs(pages_dir, exist_ok=True)
-    idx_path = os.path.join(pages_dir, "index.html")
+    idx_path = os.path.join(pages_dir, contract.HTML_INDEX_NAME)
 
     jc = jc_stats(summary, an)
     total = sum(len(s["answers"]) for s in summary)
@@ -160,30 +163,35 @@ def main():
         rank = s["rank"]
         top = s["answers"][0]["likes"] if s["answers"] else "-"
         m = len(s["answers"])
-        jc_q = {"积极": 0, "中立": 0, "消极": 0}
+        jc_q = {e: 0 for e in contract.EMOTIONS}
         for i, _ in enumerate(s["answers"]):
             jc_q[an[str(rank)]["answers"][i]["judge"]] += 1
         is_ext = rank <= 10 and str(rank) in ext
         # 覆盖度: 让读者知道"抓到的 5 条"是该问题的多少(见 SKILL.md 热点拓展/数据源说明)
         cov_html = f"<span>覆盖 {m}/{s['total_answers']}</span>" if s.get("total_answers") else ""
-        cards.append(f"""<a class="card-link" href="q{rank:02d}.html">
+        cards.append(f"""<a class="card-link" href="{contract.page_name(rank)}">
 <div class="card-top"><span class="rank">#{rank}</span>{'<span class="ext-tag">扩展</span>' if is_ext else ''}</div>
 <div class="card-title">{html.escape(s['title'])}</div>
 <div class="card-meta"><span>最高赞 <b>{top}</b></span><span>{m} 回答</span>{cov_html}</div>
 {mbar_html(jc_q, m)}</a>""")
 
+    # 情绪统计条: 标签与配色均按契约值域生成, 不硬编码具体情绪词
+    emo_stats = "".join(f"<span><b>{jc[e]}</b>{e}</span>" for e in contract.EMOTIONS)
+    emo_bar = "\n".join(
+        f'<i style="width:{jc[e] * 100 // max(total,1)}%;'
+        f'background:var(--{contract.EMOTION_CSS_CLASS[e]})"></i>'
+        for e in contract.EMOTIONS)
+
     idx_html = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>知乎热榜跟进 {args.date} · 索引</title><style>{CSS}</style></head><body>
-<header><h1>知乎热榜跟进 · {args.date}</h1>
+<title>{contract.REPORT_TITLE} {args.date} · 索引</title><style>{CSS}</style></head><body>
+<header><h1>{contract.REPORT_TITLE} · {args.date}</h1>
 <p>数据来源：知乎开放平台热榜 · 每问题数据 =「问题维度网页接口(按赞取前 N)」∪「关键词搜索召回」并集 · 点击卡片进入详情页 · 前 10 含热点拓展</p>
 <div class="stats"><span><b>{n}</b>问题</span><span><b>{total}</b>回答</span>
-<span><b>{jc['积极']}</b>积极</span><span><b>{jc['中立']}</b>中立</span><span><b>{jc['消极']}</b>消极</span>
-<span class="ebar"><i style="width:{jc['积极'] * 100 // max(total,1)}%;background:var(--pos)"></i>
-<i style="width:{jc['中立'] * 100 // max(total,1)}%;background:var(--neu)"></i>
-<i style="width:{jc['消极'] * 100 // max(total,1)}%;background:var(--neg)"></i></span></div>
+{emo_stats}
+<span class="ebar">{emo_bar}</span></div>
 </header><main class="idx">{"".join(cards)}
-</main><footer>生成于 {args.date} · 原始数据与脚本见 raw/{args.date} · 四维分析基于回答原文归纳</footer></body></html>"""
+</main><footer>生成于 {args.date} · 原始数据与脚本见 {contract.RAW_DIRNAME}/{args.date} · 四维分析基于回答原文归纳</footer></body></html>"""
     open(idx_path, "w", encoding="utf-8").write(idx_html)
 
     # ============ 详情页 ============
@@ -193,7 +201,7 @@ def main():
             A = an[str(rank)]["answers"][i - 1]
             j = A["judge"]
             st = html.escape(A["stance"])
-            parts.append(f"""<details class="a"><summary>
+            parts.append(f"""<details class="{contract.HTML_ANSWER_DETAIL_CLASS}"><summary>
 <span class="a-no">回答 {i}</span><span class="a-author">{html.escape(a['author']) or '匿名'}</span>
 <span class="a-likes">👍 {a['likes']}</span>
 <span class="judge {JUDGE_CLS.get(j, 'neu')}">{html.escape(j)}</span>
@@ -203,7 +211,7 @@ def main():
 <tr><td class="k">解决思路</td><td>{html.escape(A['approach'])}</td></tr>
 <tr><td class="k">判断逻辑</td><td>{html.escape(A['logic'])}</td></tr>
 <tr><td class="k">情绪倾向</td><td>{html.escape(A['emotion'])}</td></tr></table>
-<details class="a-text"><summary>查看原文全文（{len(a['text'])} 字）{('' if a.get('content_status') == 'full' else '· 接口摘要·全文需登录')}</summary>
+<details class="{contract.HTML_TEXT_DETAIL_CLASS}"><summary>查看原文全文（{len(a['text'])} 字）{('' if a.get('content_status') == 'full' else '· ' + contract.HTML_SUMMARY_TAG + '·全文需登录')}</summary>
 <div>{html.escape(a['text'])}</div></details></div></details>""")
         return "".join(parts)
 
@@ -211,7 +219,7 @@ def main():
         e = ext.get(str(rank))
         if not e or not (e.get("items") or e.get("thinking")):
             return ""
-        parts = ['<div class="ext"><div class="ext-head">🧠 热点拓展思考（发散分析）</div>']
+        parts = [f'<div class="ext"><div class="ext-head">🧠 {contract.HTML_EXT_MARK}（发散分析）</div>']
         if e.get("thinking"):
             parts.append(f'<div class="ext-thinking"><b>思考过程：</b>{html.escape(e["thinking"])}</div>')
         for it in e.get("items", []):
@@ -225,18 +233,19 @@ def main():
 
     for s in summary:
         rank = s["rank"]
-        prev, nxt = f"q{rank - 1:02d}.html" if rank > 1 else None, f"q{rank + 1:02d}.html" if rank < n else None
+        prev = contract.page_name(rank - 1) if rank > 1 else None
+        nxt = contract.page_name(rank + 1) if rank < n else None
         top = s["answers"][0]["likes"] if s["answers"] else "-"
         cov_badge = (f'<span class="badge">覆盖 {len(s["answers"])}/{s["total_answers"]}</span>'
                      if s.get("total_answers") else "")
         pager = f"""<div class="pager">
 <a class="{'off' if not prev else ''}" href="{prev or '#'}">← 上一题</a>
-<a href="index.html">返回索引</a>
+<a href="{contract.HTML_INDEX_NAME}">返回索引</a>
 <a class="{'off' if not nxt else ''}" href="{nxt or '#'}">下一题 →</a></div>"""
         page = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>#{rank} · 知乎热榜跟进 {args.date}</title><style>{CSS}</style></head><body>
-<div class="topbar"><a href="index.html">☰ 索引</a>{pager.replace('<div class="pager">', '').replace('</div>', '')}</div>
+<title>#{rank} · {contract.REPORT_TITLE} {args.date}</title><style>{CSS}</style></head><body>
+<div class="topbar"><a href="{contract.HTML_INDEX_NAME}">☰ 索引</a>{pager.replace('<div class="pager">', '').replace('</div>', '')}</div>
 <main class="detail">
 <div class="q">
 <div class="q-head"><span class="rank">#{rank}</span>
@@ -248,13 +257,14 @@ def main():
 </div>
 {pager}
 </main><footer>生成于 {args.date} · 四维分析基于回答原文归纳 · 热点拓展仅覆盖热榜前 10</footer></body></html>"""
-        open(os.path.join(pages_dir, f"q{rank:02d}.html"), "w", encoding="utf-8").write(page)
+        # 详情页目录跟随 --out 推导出的 pages_dir(不直接用契约默认目录, 以兼容自定义 --out)
+        open(os.path.join(pages_dir, contract.page_name(rank)), "w", encoding="utf-8").write(page)
 
     # ============ 根入口(自动跳转) ============
     rel = os.path.relpath(idx_path, os.path.dirname(out)).replace("\\", "/")
     open(out, "w", encoding="utf-8").write(
         f'<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" '
-        f'content="0; url={rel}"><title>知乎热榜跟进 {args.date}</title></head>'
+        f'content="0; url={rel}"><title>{contract.REPORT_TITLE} {args.date}</title></head>'
         f'<body style="font-family:sans-serif;padding:40px;text-align:center">正在进入索引页…'
         f'<br><a href="{rel}">点击进入</a></body></html>')
     print(f"saved: {idx_path} + {n} 详情页 + 入口 {out}")

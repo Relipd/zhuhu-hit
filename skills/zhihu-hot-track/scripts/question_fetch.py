@@ -48,6 +48,7 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import contract   # noqa: E402  数据契约:文件名 / 字段 / 值域的单一定义处
 import zhihu_env  # noqa: E402
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -184,10 +185,10 @@ def main():
                     help="只用网页结果, 不并入搜索召回(默认并入: web ∪ search 并集)")
     args = ap.parse_args()
 
-    day = os.path.join(args.root, "raw", args.date)
-    hot = json.load(io.open(os.path.join(day, "hot.json"), encoding="utf-8-sig"))
-    items = hot["Data"]["Items"]
-    cur_path = os.path.join(day, "answers_summary.json")
+    day = contract.day_dir(args.root, args.date)
+    hot = json.load(io.open(contract.path_hot(args.root, args.date), encoding="utf-8-sig"))
+    items = hot[contract.HOT_ITEMS_PATH[0]][contract.HOT_ITEMS_PATH[1]]
+    cur_path = contract.path_answers(args.root, args.date)
     old = {}
     if os.path.exists(cur_path):
         for s in json.load(io.open(cur_path, encoding="utf-8")):

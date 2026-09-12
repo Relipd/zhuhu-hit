@@ -16,6 +16,7 @@ import argparse, json, os, re, subprocess, sys, time
 
 # 基础技术栈(zhihu skill)适配层与本脚本同目录, 见 zhihu_env.py 的模块说明
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import contract   # noqa: E402  数据契约:文件名 / 字段 / 值域的单一定义处
 import zhihu_env  # noqa: E402
 
 def cli_path():
@@ -67,11 +68,11 @@ def main():
     args = ap.parse_args()
 
     cli = cli_path()
-    day = os.path.join(args.root, "raw", args.date)
+    day = contract.day_dir(args.root, args.date)
     os.makedirs(day, exist_ok=True)
 
     # 1. 热榜
-    hot_out = os.path.join(day, "hot.json")
+    hot_out = contract.path_hot(args.root, args.date)
     if not os.path.exists(hot_out):
         r = subprocess.run([cli, "hot", "--limit", str(args.limit)],
                            capture_output=True, text=True, encoding="utf-8")
@@ -84,7 +85,7 @@ def main():
         print("hot.json 已存在, 跳过(--resume 或删除文件重抓)")
 
     hot = json.load(open(hot_out, encoding="utf-8-sig"))
-    items = hot["Data"]["Items"]
+    items = hot[contract.HOT_ITEMS_PATH[0]][contract.HOT_ITEMS_PATH[1]]
     n_v = max(2, min(args.variants, 6))
 
     # 2. 变体搜索
@@ -124,10 +125,11 @@ def main():
         summary.append({"rank": i, "qid": qid, "title": it["Title"], "url": it["Url"],
                         "summary": it.get("Summary", ""), "answers": answers[:10]})
         print(f"[{i:02d}] {len(answers)} 条回答(取前10) 最高赞={answers[0]['likes'] if answers else '-'}")
-    json.dump(summary, open(os.path.join(day, "answers_summary.json"), "w", encoding="utf-8"),
+    ans_out = contract.path_answers(args.root, args.date)
+    json.dump(summary, open(ans_out, "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
     total = sum(len(s["answers"]) for s in summary)
-    print(f"完成: {len(summary)} 问题, {total} 回答 -> {os.path.join(day, 'answers_summary.json')}")
+    print(f"完成: {len(summary)} 问题, {total} 回答 -> {ans_out}")
     print("下一步: Agent 逐条写四维分析到 analysis.json, 然后 check.py 校验、fill_excel.py 填表、gen_html.py 出网页")
 
 if __name__ == "__main__":

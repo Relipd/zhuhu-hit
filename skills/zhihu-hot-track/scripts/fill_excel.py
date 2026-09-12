@@ -8,6 +8,8 @@
 约定: 一级行=问题, 二级行=回答(≤10条); 月份文件内按天分 sheet, 最新日期在前。
 """
 import argparse, json, os, sys
+
+import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(见 contract.py)
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -70,16 +72,15 @@ def main():
     ap.add_argument("--xlsx", default=None, help="Excel 路径(默认 <root>/跟进excel-YYYY-MM.xlsx)")
     args = ap.parse_args()
 
-    day_dir = os.path.join(args.root, "raw", args.date)
     year, month = args.date.split("-")[0], args.date.split("-")[1]
-    xlsx = args.xlsx or os.path.join(args.root, f"跟进excel-{year}-{month}.xlsx")
+    xlsx = args.xlsx or contract.xlsx_path(args.root, args.date)
     if not os.path.exists(xlsx):
         ensure_workbook(xlsx, year, month)
 
-    hot = json.load(open(os.path.join(day_dir, "hot.json"), encoding="utf-8-sig"))
-    summary = json.load(open(os.path.join(day_dir, "answers_summary.json"), encoding="utf-8"))
-    an = json.load(open(os.path.join(day_dir, "analysis.json"), encoding="utf-8"))
-    ext_path = os.path.join(day_dir, "extension.json")
+    hot = json.load(open(contract.path_hot(args.root, args.date), encoding="utf-8-sig"))
+    summary = json.load(open(contract.path_answers(args.root, args.date), encoding="utf-8"))
+    an = json.load(open(contract.path_analysis(args.root, args.date), encoding="utf-8"))
+    ext_path = contract.path_extension(args.root, args.date)
     ext = json.load(open(ext_path, encoding="utf-8")) if os.path.exists(ext_path) else None
 
     wb = load_workbook(xlsx)
@@ -109,16 +110,20 @@ def main():
         ws.cell(row=ws.max_row, column=5).hyperlink = s["url"]
         for i, a in enumerate(s["answers"], 1):
             A = q["answers"][i - 1]
+            # 四维分析按契约字段顺序落列(顺序由 contract.ANALYSIS_FIELDS 决定, 不在此处重复声明)
+            dims = [A[f] for f in contract.ANALYSIS_FIELDS]
             note = {"truncated": "接口摘要，全文需登录网页查看", "summary": "接口摘要(全文抓取失败)",
                     "full": None}.get(a.get("content_status"))
-            ws.append(["回答", rank, None, None, None, None, None, i, a["text"], a["likes"],
-                       A["stance"], A["approach"], A["logic"], A["emotion"], A["judge"], note])
+            ws.append(["回答", rank, None, None, None, None, None, i, a["text"], a["likes"]]
+                      + dims + [note])
             style_row(ws, False)
 
     # 情绪判断列(O列)三值下拉, 标签化约束
-    dv = DataValidation(type="list", formula1='"积极,中立,消极"', allow_blank=True,
+    dv = DataValidation(type="list",
+                        formula1='"%s"' % ",".join(contract.EMOTIONS), allow_blank=True,
                         showErrorMessage=True, errorTitle="情绪判断",
-                        error="仅允许: 积极 / 中立 / 消极(由 Agent 阅读原文判断, 禁止脚本/程序判定)")
+                        error="仅允许: %s(由 Agent 阅读原文判断, 禁止脚本/程序判定)"
+                              % " / ".join(contract.EMOTIONS))
     ws.add_data_validation(dv)
     dv.add(f"O2:O{ws.max_row}")
 
@@ -132,12 +137,17 @@ def main():
         EXT_HEADERS = ["日期", "排名", "问题标题", "扩展类型", "扩展内容", "来源链接", "备注"]
         ext_sheet = wb.create_sheet("热点拓展") if "热点拓展" not in wb.sheetnames else wb["热点拓展"]
         # 保留其他日期的行
+        # 注意: 历史上每次重跑都会把残留的表头行(首列 = "日期")当作"其他日期的数据行"
+        # 再保留一次, 于是表头逐次累积(实测 2026-09 表里积了 4 行重复表头)。此处一并过滤。
         old_rows = []
         if ext_sheet.max_row > 1:
             for r in ext_sheet.iter_rows(min_row=2, values_only=True):
-                if r[0] != args.date:
-                    old_rows.append(r)
-        ext_sheet.delete_rows(2, ext_sheet.max_row)
+                if r[0] in (None, EXT_HEADERS[0]) or r[0] == args.date:
+                    continue
+                old_rows.append(r)
+        # 清空整表再写表头: 只删 2..N 行会保留第 1 行的旧表头, 而 append 又把新表头写到第 2 行,
+        # 于是每次重跑都多一行重复表头(实测 2026-09 表里积到 4 行)。
+        ext_sheet.delete_rows(1, max(ext_sheet.max_row, 1))
         ext_sheet.append(EXT_HEADERS)
         for c in ext_sheet[1]:
             c.fill, c.font = HDR_FILL, HDR_FONT

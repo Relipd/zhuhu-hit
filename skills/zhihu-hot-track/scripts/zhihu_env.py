@@ -28,6 +28,8 @@ import os
 import subprocess
 import sys
 
+import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(见 contract.py)
+
 __all__ = [
     "cli_home", "candidates", "skill_dir", "skill_status", "resolve_cli",
     "require_cli", "keychain_present", "diagnose", "cli_version", "run_skill_setup_hint",
@@ -199,11 +201,11 @@ def find_cookie(root, date=None):
     """
     cands = []
     if date:
-        cands.append(os.path.join(root, "raw", date, "cookies.txt"))
-    raw = os.path.join(root, "raw")
+        cands.append(contract.path_cookie(root, date))
+    raw = os.path.join(root, contract.RAW_DIRNAME)
     if os.path.isdir(raw):
         for d in sorted(os.listdir(raw), reverse=True):
-            cands.append(os.path.join(raw, d, "cookies.txt"))
+            cands.append(os.path.join(raw, d, contract.FILE_COOKIE))
     for p in cands:
         try:
             if os.path.exists(p) and os.path.getsize(p) > 0:

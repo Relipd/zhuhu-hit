@@ -18,6 +18,7 @@ import argparse, io, json, os, re, sys, time, urllib.request
 
 # 基础技术栈适配层与本脚本同目录(见 zhihu_env.py 的模块说明)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import contract   # noqa: E402  数据契约:文件名 / 字段 / 值域的单一定义处
 import zhihu_env  # noqa: E402
 
 def qid_of(url):
@@ -79,8 +80,7 @@ def main():
             cookie = f.read().strip()
         print(f"[info] cookie: 复用 {cookie_path}(不验证、不删除)")
 
-    day = os.path.join(args.root, "raw", args.date)
-    path = os.path.join(day, "answers_summary.json")
+    path = contract.path_answers(args.root, args.date)
     summary = json.load(open(path, encoding="utf-8"))
 
     stats = {"full": 0, "truncated": 0, "summary": 0}

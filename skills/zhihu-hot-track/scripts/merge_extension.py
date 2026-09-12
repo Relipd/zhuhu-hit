@@ -21,9 +21,11 @@ type 属于 {案例,人物,链路} / 同 rank 同 type ≤3 / url 以 http 开�
 """
 import argparse, io, json, os, re, sys
 
-TYPES = ("案例", "人物", "链路")
-MAX_PER_TYPE = 3
-LEN_WARN = (60, 300)
+import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(见 contract.py)
+
+TYPES = contract.EXT_TYPES
+MAX_PER_TYPE = contract.EXT_MAX_PER_TYPE
+LEN_WARN = contract.EXT_CONTENT_LEN
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -152,7 +154,7 @@ def main():
     args = ap.parse_args()
 
     src = args.src or os.path.join(args.root, "ext_search", args.date)
-    out = args.out or os.path.join(args.root, "raw", args.date, "extension.json")
+    out = args.out or contract.path_extension(args.root, args.date)
     if not os.path.isdir(src):
         sys.exit(f"[FAIL] 拓展目录不存在: {src}")
 

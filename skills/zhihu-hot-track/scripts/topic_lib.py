@@ -16,6 +16,8 @@ import os
 import re
 import sys
 
+import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(见 contract.py)
+
 
 def load_index(path):
     if not os.path.exists(path):
@@ -69,16 +71,16 @@ def rebuild_md(items):
 
 
 def cmd_update(root, date):
-    lib = os.path.join(root, "话题库")
+    lib = contract.lib_dir(root)
     if not os.path.isdir(lib):
         os.makedirs(lib)
-    ip, mp = os.path.join(lib, "index.json"), os.path.join(lib, "话题库.md")
+    ip, mp = contract.lib_index(root), contract.lib_md(root)
     items = load_index(ip)
     if not items and os.path.exists(mp):
         with io.open(mp, "r", encoding="utf-8") as f:
             items = parse_md(f.read())
         print("index.json 为空,已从现有 md 迁移", len(items), "条")
-    ext_path = os.path.join(root, "raw", date, "extension.json")
+    ext_path = contract.path_extension(root, date)
     if os.path.exists(ext_path):
         with io.open(ext_path, "r", encoding="utf-8-sig") as f:
             ext = json.load(f)
@@ -108,8 +110,7 @@ def cmd_update(root, date):
 
 
 def cmd_search(root, url=None, keyword=None, cat=None):
-    lib = os.path.join(root, "话题库")
-    items = load_index(os.path.join(lib, "index.json"))
+    items = load_index(contract.lib_index(root))
     if not items:
         print("index.json 为空,先执行 topic_lib.py update")
         return 1
@@ -139,10 +140,10 @@ def cmd_prune(root, date):
     话题库只增不减会与 extension.json 不一致。本命令只影响指定 date 的条目,
     其他日期一动不动; 重建 md 由本命令自动完成。
     """
-    lib = os.path.join(root, "话题库")
-    ip, mp = os.path.join(lib, "index.json"), os.path.join(lib, "话题库.md")
+    lib = contract.lib_dir(root)
+    ip, mp = contract.lib_index(root), contract.lib_md(root)
     items = load_index(ip)
-    ext_path = os.path.join(root, "raw", date, "extension.json")
+    ext_path = contract.path_extension(root, date)
     if not os.path.exists(ext_path):
         print("未找到", ext_path, "-- 无法确定保留集合, 已中止(不改动 index.json)")
         return 1
@@ -167,9 +168,8 @@ def cmd_prune(root, date):
 
 
 def cmd_rebuild(root):
-    lib = os.path.join(root, "话题库")
-    items = load_index(os.path.join(lib, "index.json"))
-    with io.open(os.path.join(lib, "话题库.md"), "w", encoding="utf-8") as f:
+    items = load_index(contract.lib_index(root))
+    with io.open(contract.lib_md(root), "w", encoding="utf-8") as f:
         f.write(rebuild_md(items))
     print("已从 index.json 重建 md,共", len(items), "条")
 
