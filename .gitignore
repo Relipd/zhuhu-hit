@@ -1,4 +1,15 @@
+# Python
 __pycache__/
 *.pyc
+
+# 运行产物:数据不进仓库(仓库只包含脚本与文档)
 raw/
+ext_search/
+话题库/
+书写skill/
 *.xlsx
+*.xlsm
+
+# 凭证与登录态:绝不入库
+cookies.txt
+*.cookies.txt
