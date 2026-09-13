@@ -369,10 +369,15 @@ def sqlite_query(root, *, url=None, type_=None, cat=None, keyword=None, entity=N
             else:
                 try:
                     join = "JOIN fts f ON f.url = e.url"
-                    where.append("fts MATCH ?" if keyword else "fts.entities MATCH ?")
+                    # 2026-09-13 修: JOIN 里给了别名 f, 则**原表名 fts 不能再作列限定符** ——
+                    # `fts.entities MATCH ?` 直接报 "no such column: fts.entities", 而
+                    # `fts MATCH ?` 之所以一直能用, 是因为 FTS5 的 "表名 MATCH" 特例能按原表名解析。
+                    # 实测四种写法: fts.entities ✗ / f.entities ✓ / fts MATCH ✓ / f MATCH ✗。
+                    # 这个 bug 自该功能写下就存在, 只因 entities 一直为空而从未被触发。
+                    where.append("fts MATCH ?" if keyword else "f.entities MATCH ?")
                     args.append('"%s"' % q.replace('"', '""'))
                 except sqlite3.Error:
-                    where.append("e.content LIKE ?")
+                    where.append("%s LIKE ?" % ("e.content" if keyword else "e.entities"))
                     args.append("%" + q + "%")
                     mode = "sqlite+like"
         sql = ("SELECT e.* FROM entries e %s %s ORDER BY e.date DESC, e.type"

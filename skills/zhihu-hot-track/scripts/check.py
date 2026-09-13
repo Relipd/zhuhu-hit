@@ -2,7 +2,7 @@
 """知乎热榜跟进 - 数据完整性校验(Agent 完成分析后运行)。
 
 用法: python check.py --root <工作根目录> --date 2026-08-08
-检查: 热榜条数 / 回答内容非空 / 分析四维齐全 / 情绪判断值域 / URL 前缀
+检查: 热榜条数 / 回答内容非空 / 分析四维齐全 / 情绪字段值域(新:多标签+强度+指向; 旧:三元 judge) / URL 前缀
 有缺失时退出码非 0, 输出缺失明细。
 """
 import argparse, json, os, sys
@@ -19,6 +19,9 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 JUDGES = set(contract.EMOTIONS)
+TAGS = set(contract.EMOTION_TAGS)
+TARGETS = set(contract.EMOTION_TARGETS)
+INTENS = set(contract.EMOTION_INTENSITY)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -58,12 +61,36 @@ def main():
             if i - 1 >= len(q["answers"]):
                 continue
             A = q["answers"][i - 1]
-            for k in contract.ANALYSIS_FIELDS:
+            for k in contract.ANALYSIS_CORE:
                 v = A.get(k)
                 if not v or v == "MISSING":
                     problems.append(f"#{s['rank']}-回答{i} 分析字段[{k}]缺失")
-            if A.get("judge") not in JUDGES:
-                problems.append(f"#{s['rank']}-回答{i} 情绪判断非法: {A.get('judge')}")
+            # 情绪: 两套模型并存(2026-09-13 起为「多标签+强度+指向」)。
+            # 优先按新模型校验(带 emotion_tags 即新数据); 仅 legacy judge 时按旧三元校验;
+            # 两者都没有 = 漏标。这样过渡期一条记录同时带两套也不会绕过新校验。
+            if A.get("emotion_tags") is not None:
+                tags = A.get("emotion_tags")
+                if not isinstance(tags, list) or not tags:
+                    problems.append(f"#{s['rank']}-回答{i} 情绪标签缺失(应为 1-{contract.EMOTION_TAG_MAX} 个)")
+                else:
+                    bad = [t for t in tags if t not in TAGS]
+                    if bad:
+                        problems.append(f"#{s['rank']}-回答{i} 情绪标签非法: {bad}")
+                    if len(tags) > contract.EMOTION_TAG_MAX:
+                        problems.append(f"#{s['rank']}-回答{i} 情绪标签 {len(tags)} 个, 超过上限 "
+                                        f"{contract.EMOTION_TAG_MAX}")
+                    if len(set(tags)) != len(tags):
+                        problems.append(f"#{s['rank']}-回答{i} 情绪标签重复: {tags}")
+                if A.get("emotion_intensity") not in INTENS:
+                    problems.append(f"#{s['rank']}-回答{i} 情绪强度非法: {A.get('emotion_intensity')}"
+                                    f"(应为 1-5)")
+                if A.get("emotion_target") not in TARGETS:
+                    problems.append(f"#{s['rank']}-回答{i} 情绪指向非法: {A.get('emotion_target')}")
+            elif A.get("judge"):
+                if A["judge"] not in JUDGES:
+                    problems.append(f"#{s['rank']}-回答{i} 情绪判断非法: {A['judge']}")
+            else:
+                problems.append(f"#{s['rank']}-回答{i} 情绪字段缺失(既无 emotion_tags 也无 judge)")
 
     print(f"校验: {len(summary)} 问题, {total} 回答")
     # 覆盖度提示(软, 不影响退出码): 有 total_answers 时报告"抓到多少 / 该问题共有多少",
@@ -81,7 +108,7 @@ def main():
         for p in problems[:50]:
             print("  -", p)
         sys.exit(1)
-    print("[OK] 全部通过: 分析齐全, 情绪判断值域正确, 内容与 URL 无缺失")
+    print("[OK] 全部通过: 分析齐全, 情绪字段(多标签+强度+指向 或 历史三元)值域正确, 内容与 URL 无缺失")
     print("提示: HTML 结构校验请运行 scripts/verify_html.py --root <ROOT> --date <D>")
 
 if __name__ == "__main__":

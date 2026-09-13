@@ -8,7 +8,7 @@
 
 用法: python gen_html.py --root <工作根目录> --date 2026-08-08 [--out <输出根文件>]
 """
-import argparse, html, json, os, re
+import argparse, html, io, json, os, re
 
 import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(见 contract.py)
 
@@ -87,6 +87,22 @@ main.detail { max-width: 900px; margin: 22px auto; padding: 0 24px; }
 .a-likes { color: #b45309; font-weight: 700; font-size: 13px; font-variant-numeric: tabular-nums; }
 .judge { border-radius: 4px; padding: 0 9px; font-size: 12px; font-weight: 700; color: #fff; }
 .pos { background: var(--pos); } .neu { background: var(--neu); } .neg { background: var(--neg); }
+/* 多元化情绪(2026-09-13 起): 多标签 chips + 强度点 + 指向小签 */
+.emo { border-radius: 4px; padding: 1px 8px; font-size: 11.5px; font-weight: 700; color: #fff;
+  white-space: nowrap; }
+.t-hot { background: #c0493a; } .t-cold { background: #5b7c99; } .t-warm { background: #2f7d4f; }
+.t-up { background: #b08d2e; } .t-wry { background: #8a6f9e; } .t-dry { background: #8a8a8a; }
+.emo-up { color: #b45309; font-size: 12px; letter-spacing: 1.5px; }
+.emo-up i { font-style: normal; color: #ded8c8; }
+.emo-tgt { color: var(--muted); font-size: 11.5px; border: 1px solid var(--line);
+  border-radius: 4px; padding: 1px 6px; background: #fbfaf6; }
+.legend { font-size: 12px; color: var(--muted); line-height: 1.9; }
+.legend .emo, .legend .emo-tgt { margin-right: 3px; }
+/* 拟答参考稿块: 与热点拓展的金色区分开, 用墨蓝纸感, 提示"这是给人改的稿子" */
+.draft { background: #f2f5f8; border-top: 2px solid #9fb3c8; padding: 14px 24px 18px; font-size: 13.5px; }
+.draft .ext-head { color: #2c4a68; }
+.draft .draft-title { font-weight: 700; font-size: 15px; color: #16283f; margin: 2px 0 9px; }
+.draft p { margin: 0 0 9px; line-height: 1.85; color: #2f3a44; }
 .a-stance { color: var(--muted); font-size: 13px; flex: 1; min-width: 200px; }
 .a-body { padding: 2px 24px 16px; }
 table.analysis { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0 10px; }
@@ -159,23 +175,82 @@ footer { text-align: center; color: #9b978c; font-size: 12.5px; padding: 24px; }
 }
 """
 
-def jc_stats(summary, an):
-    # 情绪统计口径由契约定义(与 Excel 下拉、verify_html 校验同源)
-    jc = {e: 0 for e in contract.EMOTIONS}
+def emotions_of(A):
+    """一条回答的情绪 → [(标签, tone)]。兼容两套模型:
+
+    新(2026-09-13 起) = emotion_tags 多标签 + 强度 + 指向;
+    旧(历史日期) = judge 三元, 用旧配色渲染, 不混进新标签的统计语义。
+    """
+    tags = A.get("emotion_tags")
+    if tags:
+        return [(t, contract.EMOTION_TAG_TONE.get(t, "dry")) for t in tags]
+    j = A.get("judge")
+    if j:
+        return [(j, contract.EMOTION_CSS_CLASS.get(j, "neu"))]
+    return []
+
+
+def color_of(tone):
+    return (contract.EMOTION_TONE_COLOR.get(tone)
+            or contract.EMOTION_LEGACY_COLOR.get(tone) or "#8a8a8a")
+
+
+def tag_stats(summary, an):
+    """情绪标签频次(全站)。旧三元会以「积极/中立/消极」三个键混入, 属预期。"""
+    c = {}
     for s in summary:
         for i, _ in enumerate(s["answers"]):
-            jc[an[str(s["rank"])]["answers"][i]["judge"]] += 1
-    return jc
+            for t, _tone in emotions_of(an[str(s["rank"])]["answers"][i]):
+                c[t] = c.get(t, 0) + 1
+    return c
 
-def mbar_html(jc, total, w=6):
-    if total == 0:
+
+def mbar_html(counter, total):
+    """按标签频次堆叠的迷你条: 主色调在前, 悬停显示标签与次数(可容纳 12 种标签)。"""
+    if total == 0 or not counter:
         return '<div class="mbar"><i style="width:100%;background:var(--neu)"></i></div>'
+    items = sorted(counter.items(), key=lambda kv: -kv[1])
     parts = []
-    for key in contract.EMOTIONS:
-        color = f"var(--{contract.EMOTION_CSS_CLASS[key]})"
-        if jc[key]:
-            parts.append(f'<i style="width:{jc[key] * 100 // total}%;background:{color}"></i>')
+    for tag, cnt in items:
+        tone = contract.EMOTION_TAG_TONE.get(tag, contract.EMOTION_CSS_CLASS.get(tag, "dry"))
+        parts.append(f'<i style="width:{max(cnt * 100 // total, 2)}%;background:{color_of(tone)}"'
+                     f' title="{html.escape(tag)} {cnt}/{total}"></i>')
     return f'<div class="mbar">{"".join(parts)}</div>'
+
+
+def emo_chips(A, with_meta=True):
+    """情绪标签 chips + 强度点 + 指向(详情页与索引图例共用)。"""
+    tags = A.get("emotion_tags")
+    if not tags:
+        j = A.get("judge")
+        if not j:
+            return ""
+        return f'<span class="judge {contract.EMOTION_CSS_CLASS.get(j, "neu")}">{html.escape(j)}</span>'
+    out = "".join('<span class="emo t-%s">%s</span>'
+                  % (contract.EMOTION_TAG_TONE.get(t, "dry"), html.escape(t)) for t in tags)
+    if with_meta:
+        k = A.get("emotion_intensity")
+        if k:
+            k = int(k)
+            out += ('<span class="emo-up" title="情绪强度 %d/5">%s<i>%s</i></span>'
+                    % (k, "●" * k, "●" * (5 - k)))
+        tgt = A.get("emotion_target")
+        if tgt:
+            out += '<span class="emo-tgt">指向 %s</span>' % html.escape(tgt)
+    return out
+
+
+def emo_legend_html():
+    """图例: 说明标签配色基调、强度点与指向的含义(交付物自解释, 不靠外部文档)。"""
+    tones = []
+    for tone, label in contract.EMOTION_TONE_LABEL.items():
+        words = "、".join(t for t in contract.EMOTION_TAGS
+                         if contract.EMOTION_TAG_TONE.get(t) == tone)
+        tones.append('<span class="emo t-%s">%s</span>%s（%s）'
+                     % (tone, words.split("、")[0], label, words))
+    return ('<div class="legend">情绪标签：' + " · ".join(tones)
+            + '<br>情绪强度：●●●●● = 1→5 级（1 极淡、5 极强）　情绪指向：'
+            + "、".join(contract.EMOTION_TARGETS) + '</div>')
 
 def main():
     ap = argparse.ArgumentParser()
@@ -194,7 +269,7 @@ def main():
     os.makedirs(pages_dir, exist_ok=True)
     idx_path = os.path.join(pages_dir, contract.HTML_INDEX_NAME)
 
-    jc = jc_stats(summary, an)
+    tag_c = tag_stats(summary, an)
     total = sum(len(s["answers"]) for s in summary)
     n = len(summary)
 
@@ -204,35 +279,39 @@ def main():
         rank = s["rank"]
         top = s["answers"][0]["likes"] if s["answers"] else "-"
         m = len(s["answers"])
-        jc_q = {e: 0 for e in contract.EMOTIONS}
+        c_q = {}
         for i, _ in enumerate(s["answers"]):
-            jc_q[an[str(rank)]["answers"][i]["judge"]] += 1
-        is_ext = rank <= 10 and str(rank) in ext
+            for t, _tone in emotions_of(an[str(rank)]["answers"][i]):
+                c_q[t] = c_q.get(t, 0) + 1
+        is_ext = str(rank) in ext
         # 覆盖度: 让读者知道"抓到的 5 条"是该问题的多少(见 SKILL.md 热点拓展/数据源说明)
         cov_html = f"<span>覆盖 {m}/{s['total_answers']}</span>" if s.get("total_answers") else ""
         cards.append(f"""<a class="card-link" href="{contract.page_name(rank)}">
 <div class="card-top"><span class="rank">#{rank}</span>{'<span class="ext-tag">扩展</span>' if is_ext else ''}{'<span class="add-tag">追加</span>' if s.get('extra') else ''}</div>
 <div class="card-title">{html.escape(s['title'])}</div>
 <div class="card-meta"><span>最高赞 <b>{top}</b></span><span>{m} 回答</span>{cov_html}</div>
-{mbar_html(jc_q, m)}</a>""")
+{mbar_html(c_q, m)}</a>""")
 
-    # 情绪统计条: 标签与配色均按契约值域生成, 不硬编码具体情绪词
-    emo_stats = "".join(f"<span><b>{jc[e]}</b>{e}</span>" for e in contract.EMOTIONS)
+    # 情绪统计: 按标签频次(新模型 12 类标签)出条; 历史日期则是旧三值, 同一条逻辑渲染
+    top_tags = sorted(tag_c.items(), key=lambda kv: -kv[1])[:8]
+    emo_stats = "".join(f"<span><b>{c}</b>{html.escape(t)}</span>" for t, c in top_tags)
     emo_bar = "\n".join(
-        f'<i style="width:{jc[e] * 100 // max(total,1)}%;'
-        f'background:var(--{contract.EMOTION_CSS_CLASS[e]})"></i>'
-        for e in contract.EMOTIONS)
+        f'<i style="width:{c * 100 // max(total, 1)}%;background:'
+        f'{color_of(contract.EMOTION_TAG_TONE.get(t, contract.EMOTION_CSS_CLASS.get(t, "dry")))}"'
+        f' title="{html.escape(t)} {c}"></i>' for t, c in
+        sorted(tag_c.items(), key=lambda kv: -kv[1]))
 
     idx_html = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{contract.REPORT_TITLE} {args.date} · 索引</title><style>{CSS}</style></head><body>
 <header><h1>{contract.REPORT_TITLE} · {args.date}</h1>
-<p>数据来源：知乎开放平台热榜 · 每问题数据 =「问题维度网页接口(按赞取前 N)」∪「关键词搜索召回」并集 · 点击卡片进入详情页 · 前 10 含热点拓展</p>
+<p>数据来源：知乎开放平台热榜 · 每问题数据 =「问题维度网页接口(按赞取前 N)」∪「关键词搜索召回」并集 · 点击卡片进入详情页 · 全部条目含热点拓展</p>
 <div class="stats"><span><b>{n}</b>问题</span><span><b>{total}</b>回答</span>
 {emo_stats}
 <span class="ebar">{emo_bar}</span></div>
+{emo_legend_html()}
 </header><main class="idx">{"".join(cards)}
-</main><footer>生成于 {args.date} · 原始数据与脚本见 {contract.RAW_DIRNAME}/{args.date} · 四维分析基于回答原文归纳</footer></body></html>"""
+</main><footer>生成于 {args.date} · 原始数据与脚本见 {contract.RAW_DIRNAME}/{args.date} · 四维分析基于回答原文归纳 · 情绪为「多标签＋强度＋指向」, 由 Agent 阅读原文判定</footer></body></html>"""
     open(idx_path, "w", encoding="utf-8").write(idx_html)
 
     # ============ 详情页 ============
@@ -240,21 +319,54 @@ def main():
         parts = []
         for i, a in enumerate(s["answers"], 1):
             A = an[str(rank)]["answers"][i - 1]
-            j = A["judge"]
             st = html.escape(A["stance"])
+            rows = [("立场", st),
+                    ("解决思路", html.escape(A["approach"])),
+                    ("判断逻辑", html.escape(A["logic"])),
+                    ("情绪倾向", html.escape(A["emotion"]))]
+            # 多元化情绪三行(仅新模型; 历史日期没有这三列, 只出「情绪倾向」)
+            if A.get("emotion_tags"):
+                k = int(A.get("emotion_intensity") or 0)
+                rows.append(("情绪标签", "、".join(html.escape(t) for t in A["emotion_tags"])))
+                rows.append(("情绪强度", f"{'●' * k}{'○' * (5 - k)}　{k}/5（1 极淡 → 5 极强）"))
+                rows.append(("情绪指向", html.escape(A.get("emotion_target") or "")))
+            table = "".join(f'<tr><td class="k">{k2}</td><td>{v}</td></tr>' for k2, v in rows)
             parts.append(f"""<details class="{contract.HTML_ANSWER_DETAIL_CLASS}"><summary>
 <span class="a-no">回答 {i}</span><span class="a-author">{html.escape(a['author']) or '匿名'}</span>
 <span class="a-likes">👍 {a['likes']}</span>
-<span class="judge {JUDGE_CLS.get(j, 'neu')}">{html.escape(j)}</span>
+{emo_chips(A)}
 <span class="a-stance">{st}</span></summary>
-<div class="a-body"><table class="analysis">
-<tr><td class="k">立场</td><td>{st}</td></tr>
-<tr><td class="k">解决思路</td><td>{html.escape(A['approach'])}</td></tr>
-<tr><td class="k">判断逻辑</td><td>{html.escape(A['logic'])}</td></tr>
-<tr><td class="k">情绪倾向</td><td>{html.escape(A['emotion'])}</td></tr></table>
+<div class="a-body"><table class="analysis">{table}</table>
 <details class="{contract.HTML_TEXT_DETAIL_CLASS}"><summary>查看原文全文（{len(a['text'])} 字）{('' if a.get('content_status') == 'full' else '· ' + contract.HTML_SUMMARY_TAG + '·全文需登录')}</summary>
 <div>{html.escape(a['text'])}</div></details></div></details>""")
         return "".join(parts)
+
+    def draft_html(rank):
+        """拟答参考稿(ext_search/<D>/rank_<n>/draft_<n>.md, 由拓展 subagent 产出)。
+
+        稿子是给人改语言用的: 原样展示、不做 markdown 渲染(只处理首行 # 标题与段落切分),
+        避免转义/加粗把内容改样。文件不存在就整块不出现(历史日期都没有稿子)。
+        """
+        p = contract.path_draft(args.root, args.date, rank)
+        if not os.path.exists(p):
+            return ""
+        try:
+            raw = io.open(p, encoding="utf-8-sig").read().strip()
+        except Exception:
+            return ""
+        if not raw:
+            return ""
+        lines = raw.splitlines()
+        title = ""
+        if lines and lines[0].lstrip().startswith("#"):
+            title = lines[0].lstrip("# ").strip()
+            lines = lines[1:]
+        paras = [x.strip() for x in "\n".join(lines).split("\n\n") if x.strip()]
+        body = "".join("<p>%s</p>" % html.escape(x).replace("\n", "<br>") for x in paras)
+        head = (f'<div class="ext-head">✍️ {contract.DRAFT_SHEET}（按扩展思路拟，'
+                f'{len(re.sub(chr(92) + "s", "", raw))} 字）</div>')
+        t = f'<div class="draft-title">{html.escape(title)}</div>' if title else ""
+        return f'<div class="draft">{head}{t}{body}</div>'
 
     def ext_html(rank):
         e = ext.get(str(rank))
@@ -279,9 +391,14 @@ def main():
                 kind = it.get("source_kind") or ""
                 if kind:
                     tier_html += f'<span class="kind">{html.escape(kind)}</span>'
-                if it.get("link_status") and str(it["link_status"]) != "200":
-                    tier_html += (f'<span class="dead">来源已失效 {html.escape(str(it["link_status"]))}'
-                                  f'</span>')
+                ls = str(it.get("link_status") or "")
+                if ls in contract.EXT_LINK_DEAD:
+                    tier_html += f'<span class="dead">来源已失效 {html.escape(ls)}</span>'
+                elif ls and ls not in ("200", "skipped"):
+                    # 5xx/超时/连接错误 = 未探明(站点限流), 不能当死链 —— 否则一次 522 成片
+                    # 就会给几十条活链接贴上「来源已失效」(2026-09-13 实测)。
+                    tier_html += (f'<span class="kind" title="探活未成功，非确定性失效">'
+                                  f'探活未成功 {html.escape(ls)}</span>')
                 corr = (it.get("corroboration") or {}).get("groups") or 0
                 if corr >= contract.EXT_CORROBORATION_MIN:
                     hosts = (it.get("corroboration") or {}).get("hosts") or []
@@ -366,9 +483,10 @@ def main():
 <div class="essence"><b>问题本质：</b>{html.escape(an[str(rank)]['essence'])}</div>
 {answer_html(s, rank)}
 {ext_html(rank)}
+{draft_html(rank)}
 </div>
 {pager}
-</main><footer>生成于 {args.date} · 四维分析基于回答原文归纳 · {'本页为单问题追加追踪（非榜单条目）' if s.get('extra') else '热点拓展仅覆盖热榜前 10'}</footer></body></html>"""
+</main><footer>生成于 {args.date} · 四维分析基于回答原文归纳 · {'本页为单问题追加追踪（非榜单条目）' if s.get('extra') else '热点拓展覆盖全部条目'}</footer></body></html>"""
         # 详情页目录跟随 --out 推导出的 pages_dir(不直接用契约默认目录, 以兼容自定义 --out)
         open(os.path.join(pages_dir, contract.page_name(rank)), "w", encoding="utf-8").write(page)
 

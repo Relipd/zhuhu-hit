@@ -105,8 +105,18 @@ def check_item(it, n, where, old):
     rel = str(it.get("relation") or "").strip()
     if rel and rel not in RELATIONS:
         old.append(f"rank_{n}: {where} relation 非法: {rel!r} (应为 印证/反驳/边界)")
-    return {"type": t, "content": content, "url": url, "note": str(it.get("note") or ""),
-            "relation": rel, "claim": ""}
+    # entities(主体锚点, 供话题库 --entity 检索): 2026-09-13 修 —— 这里原先把返回值写死成
+    # 固定 6 个键, **subagent 就算填了 entities 也会被静默丢掉**(与"没人填"叠加, 使该字段
+    # 在实测中 0 条落库、--entity 检索彻底失效)。现原样保留并做规范化。
+    ents = it.get("entities")
+    if isinstance(ents, str):
+        ents = [ents]
+    ents = [str(x).strip() for x in (ents or []) if str(x).strip()][:contract.EXT_ENTITY_MAX]
+    out = {"type": t, "content": content, "url": url, "note": str(it.get("note") or ""),
+           "relation": rel, "claim": ""}
+    if ents:
+        out["entities"] = ents
+    return out
 
 
 def strip_label(text, labels=("落点", "想法", "结论")):
@@ -221,9 +231,16 @@ def normalize_dropped(dropped, n, warnings, errors):
             continue
         if not it.get("reason"):
             warnings.append(f"rank_{n}: dropped[{i}] 缺 reason(说明为何归为同类而不单列)")
-        out.append({"type": it["type"], "content": str(it["content"]),
-                    "url": str(it["url"]), "note": strip_note_label(str(it.get("note") or "")),
-                    "reason": str(it.get("reason") or "")})
+        d_ents = it.get("entities")
+        if isinstance(d_ents, str):
+            d_ents = [d_ents]
+        d_ents = [str(x).strip() for x in (d_ents or []) if str(x).strip()][:contract.EXT_ENTITY_MAX]
+        rec = {"type": it["type"], "content": str(it["content"]),
+               "url": str(it["url"]), "note": strip_note_label(str(it.get("note") or "")),
+               "reason": str(it.get("reason") or "")}
+        if d_ents:
+            rec["entities"] = d_ents
+        out.append(rec)
     return out
 
 
@@ -249,13 +266,24 @@ def normalize(data, n, warnings, errors):
             if v is not None:
                 norm_items.append(v)
 
-    type_count = {}
+    # type 上限**只统计链内证据**(norm_items = chains 展平), dropped 不计入 ——
+    # 实测 2026-09-13 有两个 subagent 误以为 dropped 也被计入, 于是把该留档的同类案例塞进
+    # thinking、并连续失败 4 轮。故错误信息里直接点名"仅链内证据"并给出超限项落在哪几条链,
+    # 让子 agent 不必猜(它自己数的口径容易把 dropped 一起数进去)。
+    type_count, type_where = {}, {}
     for it in norm_items:
         if it["type"] in TYPES:
             type_count[it["type"]] = type_count.get(it["type"], 0) + 1
+    for ci, ch in enumerate(chains, 1):
+        for e in ch["evidence"]:
+            if e["type"] in TYPES:
+                type_where.setdefault(e["type"], []).append("chains[%d]" % ci)
     for t, c in type_count.items():
         if c > MAX_PER_TYPE:
-            errors.append(f"rank_{n}: type「{t}」共 {c} 条, 超过上限 {MAX_PER_TYPE}")
+            errors.append(f"rank_{n}: type「{t}」共 {c} 条, 超过上限 {MAX_PER_TYPE}"
+                          f" —— 仅统计**链内证据**(chains[].evidence), dropped 与 thinking 都不计入; "
+                          f"本 rank 的「{t}」落在 {', '.join(type_where.get(t, []))}, "
+                          f"请把同类证据合并进已有条目、或改写进 dropped(in adopted=false 备查)")
 
     thinking = data.get("thinking") or ""
     if not thinking and data.get("divergence_dirs"):
@@ -284,6 +312,45 @@ def normalize(data, n, warnings, errors):
     }
 
 
+def check_source_alignment(ext, root, date, warnings):
+    """对账 chains[].source 与 answers_summary.json(2026-09-13 新增)。
+
+    为什么需要: 实测 rank_3 与 rank_6 **各自独立**发现旧版所有链的 `source.answer_index`
+    与 `likes` 错配(把低赞回答挂在别的序号上) —— 症状隐蔽: likes 对得上**某一条**回答、
+    index 却对不上, 单看 JSON 看不出来。链的「想法出处」会被渲染成可点击的原答链接,
+    序号错了读者点过去会看到另一条回答, 所以必须机器对账。
+    只告警不失败(属元数据, 不阻塞交付)。
+    """
+    p = contract.path_answers(root, date)
+    if not os.path.exists(p):
+        return
+    try:
+        with io.open(p, encoding="utf-8-sig") as f:
+            summary = {str(s["rank"]): s for s in json.load(f)}
+    except Exception:
+        return
+    for rk, blk in ext.items():
+        s = summary.get(str(rk))
+        if not s:
+            continue
+        ans = s.get("answers") or []
+        for ci, ch in enumerate(blk.get("chains") or [], 1):
+            src = ch.get("source") or {}
+            idx = src.get("answer_index")
+            if not isinstance(idx, int) or not (1 <= idx <= len(ans)):
+                warnings.append(f"rank_{rk}: chains[{ci}].source.answer_index={idx!r} 越界"
+                                f"(该 rank 共 {len(ans)} 条回答)")
+                continue
+            real = ans[idx - 1]
+            if src.get("likes") != real.get("likes"):
+                warnings.append(f"rank_{rk}: chains[{ci}].source.likes={src.get('likes')!r} "
+                                f"与第 {idx} 条回答实际 {real.get('likes')!r} 不符(出处指错了回答)")
+            u1 = contract.canon_url(src.get("url") or "")
+            u2 = contract.canon_url(real.get("url") or "")
+            if u1 and u2 and u1 != u2 and "/answer/" in u1 and "/answer/" in u2:
+                warnings.append(f"rank_{rk}: chains[{ci}].source.url 与第 {idx} 条回答不是同一条")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=os.getcwd())
@@ -295,6 +362,11 @@ def main():
     ap.add_argument("--force-overwrite", action="store_true",
                     help="--ranks 为子集时也整体重写输出(默认保留未处理 rank 的旧块, 防误覆盖丢失)")
     ap.add_argument("--quiet", action="store_true")
+    # 只读校验(2026-09-13 新增): 给 subagent 用的权威校验器 —— 原来它们只能自己写脚本自查,
+    # 实测自写的校验器会漏判(3 个 rank 自报合规, 实际 5 处硬错误), 而 merge_extension 又因
+    # 子集运行会覆盖输出而不能让它们跑。--lint 只校验、绝不写文件, 单 rank 也能安全跑。
+    ap.add_argument("--lint", action="store_true",
+                    help="只校验不写出(可配 --ranks 单跑一个 rank); 有硬错误则退出码 1")
     ap.add_argument("--no-verify", action="store_true",
                     help="跳过事实性复核(信源等级/多源印证/链接探活), 只汇总")
     ap.add_argument("--no-links", action="store_true", help="复核时跳过链接探活(不联网)")
@@ -312,7 +384,7 @@ def main():
         sys.exit(f"[FAIL] 未在 {src} 发现 rank_* 目录")
 
     warnings, errors, ext = [], [], {}
-    url_owner = {}
+    url_owner, url_content = {}, {}
     for n in ranks:
         try:
             data, path = load_rank(src, n)
@@ -322,11 +394,31 @@ def main():
         block = normalize(data, n, warnings, errors)
         ext[str(block["rank"] if isinstance(block["rank"], int) else n)] = block
         for it in list(block["items"]) + list(block.get("dropped") or []):
-            url_owner.setdefault(it["url"], []).append(f"rank{n}")
+            # 必须用 canon_url 归一键: 实测澎湃占位链接一条带 query、一条不带, 用原始 url 分组
+            # 就看不出"同一 url 多条不同内容"(而那正是复核按 url 串标的诱因)。
+            u = contract.canon_url(it["url"])
+            url_owner.setdefault(u, set()).add(f"rank{n}")
+            url_content.setdefault(u, {}).setdefault(it.get("content") or "", set()).add(f"rank{n}")
+        n_ev = len(block["items"])
+        n_ent = sum(1 for it in block["items"] if it.get("entities"))
+        if n_ev and n_ent < n_ev * 0.5:
+            warnings.append(f"rank_{n}: {n_ev - n_ent}/{n_ev} 条证据缺 entities"
+                            f"(话题库 --entity 检索将失效; 复核阶段会按主体形态兜底自动抽取)")
 
-    dups = {u: rs for u, rs in url_owner.items() if len(rs) > 1}
+    # 同一 url 被多个 rank 复用: 可接受(有时一条来源同时支撑两处论点), 话题库按 url 去重
+    dups = {u: sorted(rs) for u, rs in url_owner.items() if len(rs) > 1}
     for u, rs in dups.items():
         warnings.append(f"跨 rank 复用同一 URL({', '.join(rs)}): {u} —— 话题库按 url 去重, 确认是有意复用")
+    # 链的「想法出处」与原答对账(2026-09-13: rank_3/rank_6 各自发现 answer_index 与 likes 错配)
+    check_source_alignment(ext, args.root, args.date, warnings)
+    # 同一 url 挂**多条不同 content**(2026-09-13 新增检查): 这不是"复用", 而是把占位/重定向链接
+    # 当来源。危害有二: ① 事实性复核若按 url 缓存结论会互相串标(实测澎湃 wifiKey_detail.jsp 占位
+    # 链接被 3 个 rank 的 6 条无关证据共用); ② 话题库按 url 去重会把不同事实压成一条。
+    same_url_multi = {u: c for u, c in url_content.items() if len(c) > 1}
+    for u, c in same_url_multi.items():
+        where = sorted({r for rs in c.values() for r in rs})
+        warnings.append(f"同一 URL 挂了 {len(c)} 条不同 content({', '.join(where)}): {u} "
+                        f"—— 疑似占位/重定向链接, 请各用各自原始链接")
 
     # 防误覆盖(2026-09-12 实测教训): 若本次只处理部分 rank(--ranks 为子集)而输出文件已存在,
     # 直接整体写出会**丢掉其他 rank 的块**(实测 subagent 自校验跑 --ranks 9-10, 使 extension.json
@@ -368,6 +460,11 @@ def main():
             print("  未写出 extension.json。修正后重跑; 或加 --no-strict 强制写出。")
             sys.exit(1)
 
+    if args.lint:                      # 只读模式: 任何情况下都不写文件
+        print("[LINT] %s: %d 警告 / %d 错误 (%d 个 rank) —— 未写出任何文件" % (
+            "通过" if not errors else "未通过", len(warnings), len(errors), len(ext)))
+        sys.exit(1 if errors else 0)
+
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with io.open(out, "w", encoding="utf-8") as f:
         json.dump(ext, f, ensure_ascii=False, indent=1)
@@ -376,8 +473,12 @@ def main():
     n_chain = sum(len(b.get("chains") or []) for b in ext.values())
     n_drop = sum(len(b.get("dropped") or []) for b in ext.values())
     print(f"[OK] extension.json 写出: {out}")
-    print(f"     {len(ext)} 个 rank, {total} 条 items, {n_chain} 条发散链, "
-          f"{n_drop} 条未采用(adopted=false), {len(url_owner)} 个唯一 URL, {len(dups)} 条跨 rank 复用")
+    # 口径(2026-09-13 修): items 是 chains 的**展平镜像**(同一份内容两个对象, 见坑 39),
+    # 旧输出把两者相加报出「183 条证据」, 而真实独立证据只有 items + dropped = 112 条。
+    print(f"     {len(ext)} 个 rank, {n_chain} 条发散链, 独立证据 {total + n_drop} 条"
+          f"(链内 {total} + 未采用 {n_drop}; items 为链内镜像不另计), "
+          f"{len(url_owner)} 个唯一 URL, {len(dups)} 条跨 rank 复用, "
+          f"{len(same_url_multi)} 条同 URL 多内容")
     for k, cnt, tc, cat, has_th, nch, ndp in stats:
         print(f"     rank{k}: {nch} 链 / {cnt} 条证据 {tc} | 未采用 {ndp} | {cat} | "
               f"thinking {'有' if has_th else '缺'}")

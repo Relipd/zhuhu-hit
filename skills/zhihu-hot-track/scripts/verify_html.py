@@ -14,7 +14,7 @@ gen_html.py 只负责生成, 不校验; 历史上靠 Agent 临时手写 PowerShe
   5. 翻页链接衔接: qNN 的「上一题」=q(N-1)、「下一题」=q(N+1), 首末页为 class="off" href="#"
   6. 索引页卡片数 == 热榜条数
   7. 「接口摘要」标签数 == content_status != full 的回答数(带 Cookie 全量补全时应为 0)
-  8. 前 10 有「热点拓展思考」块, 第 11 名之后无(范围硬约束)
+  8. 拓展块覆盖 == extension.json 的 rank 集合(2026-09-13 起扩展范围=全部条目, 不再是前 10)
 """
 import argparse, io, json, os, re, sys
 
@@ -31,6 +31,12 @@ RE_PREV = re.compile(r'<a class="(?:off)?" href="([^"]*)">← 上一题</a>')
 RE_NEXT = re.compile(r'<a class="(?:off)?" href="([^"]*)">下一题 →</a>')
 RE_SUMMARY_TAG = re.compile(re.escape(contract.HTML_SUMMARY_TAG))
 RE_INDEX_CARD = re.compile(r'q(\d{2})\.html')
+# 多元化情绪标记(契约里定义了标签/tone, 这里只需按类名计数)
+RE_EMO_TAG = re.compile(r'class="emo t-')
+RE_EMO_INT = re.compile(r'class="emo-up"')
+RE_EMO_TGT = re.compile(r'class="emo-tgt"')
+RE_LEGACY_JUDGE = re.compile(r'class="judge ')
+RE_DRAFT = re.compile(r'class="draft"')
 
 
 def main():
@@ -124,23 +130,76 @@ def main():
     check("接口摘要标签数 == 非 full 回答数", n_tag == not_full,
           f"{n_tag} vs {not_full}(带 Cookie 全量补全时应为 0/0)")
 
-    # 8. 拓展范围: 榜单前 10 有、11+ 无
-    # 注: 页脚含「热点拓展仅覆盖热榜前 10」说明文字, 故用「热点拓展思考」标题判定而非「热点拓展」
-    # 单问题追加条目(rank 21+)默认就跑拓展, 不受"仅前 10"约束, 故跳过范围判定。
+    # 7b. 情绪渲染齐全(2026-09-13 新增): 多元化情绪 = 多标签 chips + 强度点 + 指向签。
+    # 与 analysis.json 逐项对账, 防止"数据改了但页面没跟上"(反之亦然); 同时挡住新旧模型串用:
+    # 新模型页面上不应再出现旧三元徽章 class="judge", 历史日期则相反。
+    an = json.load(io.open(contract.path_analysis(root, d), encoding="utf-8"))
+    exp_tags = exp_int = exp_tgt = exp_legacy = 0
+    for s in summary:
+        for a in an[str(s["rank"])]["answers"]:
+            if a.get("emotion_tags") is not None:
+                exp_tags += len(a.get("emotion_tags") or [])
+                exp_int += 1 if a.get("emotion_intensity") else 0
+                exp_tgt += 1 if a.get("emotion_target") else 0
+            elif a.get("judge"):
+                exp_legacy += 1
+    got_tags = got_int = got_tgt = got_legacy = 0
+    for i in range(1, total + 1):
+        p = contract.page_path(root, d, i)
+        if not os.path.exists(p):
+            continue
+        h = io.open(p, encoding="utf-8").read()
+        got_tags += len(RE_EMO_TAG.findall(h))
+        got_int += len(RE_EMO_INT.findall(h))
+        got_tgt += len(RE_EMO_TGT.findall(h))
+        got_legacy += len(RE_LEGACY_JUDGE.findall(h))
+    if exp_tags or exp_tgt:
+        check("情绪标签/强度/指向 渲染齐全",
+              (got_tags, got_int, got_tgt) == (exp_tags, exp_int, exp_tgt),
+              f"页面(标签{got_tags}/强度{got_int}/指向{got_tgt}) "
+              f"vs 分析(标签{exp_tags}/强度{exp_int}/指向{exp_tgt})")
+        check("情绪模型未串用", got_legacy == exp_legacy,
+              f"旧三元徽章 页面{got_legacy} vs 分析{exp_legacy}")
+
+    # 7c. 拟答参考稿渲染对账(2026-09-13 新增): 有 draft_<n>.md 的 rank 必须在详情页出现拟答块,
+    # 没有稿子的 rank 不许凭空出现该块。历史日期没有稿子 ⇒ 本项自动跳过。
+    draft_bad, n_draft = [], 0
+    for i in range(1, total + 1):
+        dp = contract.path_draft(root, d, i)
+        has_file = os.path.exists(dp) and os.path.getsize(dp) > 0
+        page = contract.page_path(root, d, i)
+        if not os.path.exists(page):
+            continue
+        has_block = bool(RE_DRAFT.search(io.open(page, encoding="utf-8").read()))
+        if has_file:
+            n_draft += 1
+        if has_file and not has_block:
+            draft_bad.append(f"q{i:02d} 有稿未渲染")
+        if has_block and not has_file:
+            draft_bad.append(f"q{i:02d} 无稿却渲染了拟答块")
+    if n_draft or draft_bad:
+        check("拟答参考稿渲染对账", not draft_bad, "; ".join(draft_bad[:8]))
+
+    # 8. 拓展范围(2026-09-13 起为**全部条目**): 有多少 rank 产出过 extension.json, 就该有多少页有拓展块。
+    # 注: 页脚含「热点拓展」说明文字, 故用 HTML_EXT_MARK 标题判定而非关键词「热点拓展」。
+    ext_path = contract.path_extension(root, d)
+    ext_ranks = set()
+    if os.path.exists(ext_path):
+        try:
+            ext_ranks = {int(k) for k in json.load(io.open(ext_path, encoding="utf-8")).keys()}
+        except Exception:
+            ext_ranks = set()
     scope_bad = []
     for i in range(1, total + 1):
         p = contract.page_path(root, d, i)
         if not os.path.exists(p):
             continue
-        html = io.open(p, encoding="utf-8").read()
-        has_block = contract.HTML_EXT_MARK in html
-        if i in extra_ranks:
-            continue
-        if i <= 10 and not has_block:
+        has_block = contract.HTML_EXT_MARK in io.open(p, encoding="utf-8").read()
+        if i in ext_ranks and not has_block:
             scope_bad.append(f"q{i:02d} 缺拓展块")
-        if i > 10 and has_block:
-            scope_bad.append(f"q{i:02d} 不应有拓展块")
-    check("拓展块仅覆盖前 10(榜单)", not scope_bad, "; ".join(scope_bad[:8]))
+        if i not in ext_ranks and has_block:
+            scope_bad.append(f"q{i:02d} 有拓展块但 extension.json 无此 rank")
+    check("拓展块覆盖 == extension.json 的 rank 集合", not scope_bad, "; ".join(scope_bad[:8]))
 
     # 输出
     fails = [r for r in results if not r[0]]

@@ -7,7 +7,7 @@
 读: <root>/raw/<date>/{hot.json, answers_summary.json, analysis.json}
 约定: 一级行=问题, 二级行=回答(≤10条); 月份文件内按天分 sheet, 最新日期在前。
 """
-import argparse, json, os, sys
+import argparse, io, json, os, sys
 
 import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(见 contract.py)
 from openpyxl import load_workbook, Workbook
@@ -17,7 +17,8 @@ from openpyxl.worksheet.datavalidation import DataValidation
 
 HEADERS = ["层级", "问题序号", "排名", "问题标题", "原问题URL", "问题点赞数", "问题本质",
            "回答序号", "回答内容", "回答点赞数",
-           "立场分析", "解决思路", "判断逻辑", "情绪倾向", "情绪判断", "备注"]
+           "立场分析", "解决思路", "判断逻辑", "情绪倾向",
+           "情绪标签", "情绪强度", "情绪指向", "备注"]
 FONT = "微软雅黑"
 HDR_FILL = PatternFill("solid", fgColor="2F5496")
 HDR_FONT = Font(name=FONT, size=10, bold=True, color="FFFFFF")
@@ -25,13 +26,17 @@ Q_FILL = PatternFill("solid", fgColor="D6E4F0")
 THIN = Side(style="thin", color="BFBFBF")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 CENTER = Alignment(horizontal="center", vertical="top")
-WIDTHS = [7, 8, 6, 40, 36, 9, 40, 8, 50, 9, 26, 26, 26, 26, 10, 12]
+WIDTHS = [7, 8, 6, 40, 36, 9, 40, 8, 50, 9, 26, 26, 26, 26, 20, 9, 12, 12]
 
 DOC = [
     ("结构", "按天分页: 每天一个 sheet(YYYY-MM-DD), 最新日期排最前。每月一个 Excel 文件。"),
     ("一级行-问题", "层级=问题: 问题序号(1-20), 排名, 标题, 原问题URL, 问题点赞数(接口无则取最高赞回答并备注), 问题本质。"),
     ("二级行-回答", "层级=回答: 问题序号(归属), 回答序号(1-10), 回答内容(原文), 回答点赞数。"),
-    ("回答四维分析", "立场分析/解决思路/判断逻辑/情绪倾向 基于原文归纳, 不编造; 情绪判断三选一 积极/中立/消极。"),
+    ("回答四维分析", "立场分析/解决思路/判断逻辑/情绪倾向 基于原文归纳, 不编造。"),
+    ("情绪模型(2026-09-13 起)", "多元化情绪: 情绪标签(" + "/".join(contract.EMOTION_TAGS)
+     + ", 每条 1-3 个) + 情绪强度(1 极淡-5 极强) + 情绪指向(" + "/".join(contract.EMOTION_TARGETS)
+     + ")。均由 Agent 阅读原文判断, 禁止脚本/程序判定。"),
+    ("历史日期", "2026-09-11 及更早的 sheet 是旧三元模型(情绪判断: 积极/中立/消极), 保留原样不改写。"),
     ("示例行", "模板首次创建时含示例日 sheet, 正式抓取后由 fill_excel 替换。"),
     ("数据来源", "zhihu-cli: hot + search zhihu 多变体查询合并。详见 skill 文档。"),
 ]
@@ -55,6 +60,21 @@ def ensure_workbook(path, year, month):
     wb.save(path)
     print(f"新建月度模板: {path}")
 
+def emotion_cells(A):
+    """情绪三列的值(标签/强度/指向)。
+
+    两套模型并存(2026-09-13 起为多标签+强度+指向): 新数据直接取三字段;
+    历史三元数据(只有 judge)把三值放进标签列、后两列留空 —— 这样即便对旧日期重跑 fill_excel,
+    也不会因为字段缺失而崩, 且信息不丢。
+    """
+    if A.get("emotion_tags") is not None:
+        tags = "、".join(A.get("emotion_tags") or [])
+        return [tags or None, A.get("emotion_intensity"), A.get("emotion_target")]
+    if A.get("judge"):
+        return [A["judge"] + "(旧三元)", None, None]
+    return [None, None, None]
+
+
 def style_row(ws, is_q):
     for c in ws[ws.max_row]:
         c.font = Font(name=FONT, size=10)
@@ -62,8 +82,32 @@ def style_row(ws, is_q):
         c.alignment = Alignment(vertical="top", wrap_text=True)
         if is_q:
             c.fill = Q_FILL
-    for col in (2, 3, 6, 8, 10, 15):
+    for col in (2, 3, 6, 8, 10, 15, 16, 17):
         ws.cell(row=ws.max_row, column=col).alignment = CENTER
+
+def write_doc_sheet(wb):
+    """刷新「说明」sheet(每次运行都重写)。
+
+    为什么每次写: 说明 sheet 原先只在**新建工作簿**时生成, 因此模型/列结构改了它也不会更新 ——
+    实测 2026-09-13 情绪改多元化后, 说明页仍在讲旧三值, 交付物自相矛盾。
+    """
+    if "说明" not in wb.sheetnames:
+        ws = wb.create_sheet("说明", len(wb.sheetnames))
+    else:
+        ws = wb["说明"]
+        ws.delete_rows(1, ws.max_row + 1)
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 100
+    for i, (a, b) in enumerate(DOC, 1):
+        ca, cb = ws.cell(row=i, column=1, value=a), ws.cell(row=i, column=2, value=b)
+        ca.font = Font(name=FONT, size=10, bold=True)
+        cb.font = Font(name=FONT, size=10)
+        cb.alignment = Alignment(vertical="top", wrap_text=True)
+        if i == 1:
+            for c in (ca, cb):
+                c.fill, c.font = HDR_FILL, HDR_FONT
+    ws.freeze_panes = "A2"
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -83,6 +127,7 @@ def main():
     ext = json.load(open(ext_path, encoding="utf-8")) if os.path.exists(ext_path) else None
 
     wb = load_workbook(xlsx)
+    write_doc_sheet(wb)
     if args.date in wb.sheetnames:
         del wb[args.date]
     ws = wb.create_sheet(args.date, 0)
@@ -105,35 +150,38 @@ def main():
         if s.get("extra"):
             note_q = (note_q + " | " if note_q else "") + "追加追踪(非榜单条目)"
         ws.append(["问题", rank, rank, s["title"], s["url"], top, q["essence"],
-                   None, None, None, None, None, None, None, None,
+                   None, None, None, None, None, None, None, None, None, None,
                    note_q or None])
         style_row(ws, True)
         ws.cell(row=ws.max_row, column=5).hyperlink = s["url"]
         for i, a in enumerate(s["answers"], 1):
             A = q["answers"][i - 1]
-            # 四维分析按契约字段顺序落列(顺序由 contract.ANALYSIS_FIELDS 决定, 不在此处重复声明)
-            dims = [A[f] for f in contract.ANALYSIS_FIELDS]
+            # 四维主体按契约顺序落列(顺序由 contract.ANALYSIS_CORE 决定, 不在此处重复声明);
+            # 情绪占 3 列(标签/强度/指向), 由 emotion_cells 兼容新旧两套模型。
+            dims = [A[f] for f in contract.ANALYSIS_CORE] + emotion_cells(A)
             note = {"truncated": "接口摘要，全文需登录网页查看", "summary": "接口摘要(全文抓取失败)",
                     "full": None}.get(a.get("content_status"))
             ws.append(["回答", rank, None, None, None, None, None, i, a["text"], a["likes"]]
                       + dims + [note])
             style_row(ws, False)
 
-    # 情绪判断列(O列)三值下拉, 标签化约束
-    dv = DataValidation(type="list",
-                        formula1='"%s"' % ",".join(contract.EMOTIONS), allow_blank=True,
-                        showErrorMessage=True, errorTitle="情绪判断",
-                        error="仅允许: %s(由 Agent 阅读原文判断, 禁止脚本/程序判定)"
-                              % " / ".join(contract.EMOTIONS))
-    ws.add_data_validation(dv)
-    dv.add(f"O2:O{ws.max_row}")
+    # 情绪列: 强度(O列)与指向(Q列)是单值 → 硬下拉约束; 标签列(P列)是 1-3 个多值,
+    # Excel 的 list 校验无法表达多选(会把合法值判为非法), 故不加硬下拉, 词表写在「说明」sheet。
+    for col, vals, title in (("P", list(contract.EMOTION_INTENSITY), "情绪强度"),
+                             ("R", list(contract.EMOTION_TARGETS), "情绪指向")):
+        dv = DataValidation(type="list", formula1='"%s"' % ",".join(str(v) for v in vals),
+                            allow_blank=True, showErrorMessage=True, errorTitle=title,
+                            error="仅允许: %s(由 Agent 阅读原文判断, 禁止脚本/程序判定)"
+                                  % " / ".join(str(v) for v in vals))
+        ws.add_data_validation(dv)
+        dv.add(f"{col}2:{col}{ws.max_row}")
 
     for i, w in enumerate(WIDTHS, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:P{ws.max_row}"
+    ws.auto_filter.ref = f"A1:R{ws.max_row}"
 
-    # ---- 热点拓展板块(extension.json, 仅热榜前10) ----
+    # ---- 热点拓展板块(extension.json; 2026-09-13 起覆盖全部条目, 不再只写前 10) ----
     if ext:
         # 末列「发散想法 / 关系 / 信源等级 / 多源印证 / 链接」为链式与事实性复核新增;
         # 追加在末尾, 保证历史日期的行不会错位。
@@ -218,12 +266,57 @@ def main():
         ext_sheet.auto_filter.ref = f"A1:L{ext_sheet.max_row}"
         wb.move_sheet("热点拓展", offset=len(wb.sheetnames) - 2)
 
+    # ---- 拟答参考稿(ext_search/<D>/rank_<n>/draft_<n>.md, 2026-09-13 起) ----
+    # 与「热点拓展」同款累积表: 保留其他日期的行, 重写当日行, 表头只留一行(坑 31)。
+    draft_rows = []
+    for s in summary:
+        rk = s["rank"]
+        p = contract.path_draft(args.root, args.date, rk)
+        if not os.path.exists(p):
+            continue
+        try:
+            raw = io.open(p, encoding="utf-8-sig").read().strip()
+        except Exception:
+            continue
+        if not raw:
+            continue
+        lines = raw.splitlines()
+        title = lines[0].lstrip("# ").strip() if lines and lines[0].lstrip().startswith("#") else ""
+        body = "\n".join(lines[1:] if title else lines).strip()
+        draft_rows.append([args.date, rk, s["title"], title, body])
+    H = list(contract.DRAFT_HEADERS)
+    ds = wb[contract.DRAFT_SHEET] if contract.DRAFT_SHEET in wb.sheetnames \
+        else wb.create_sheet(contract.DRAFT_SHEET)
+    old = []
+    if ds.max_row > 1:
+        for r in ds.iter_rows(min_row=2, values_only=True):
+            if r[0] in (None, H[0]) or r[0] == args.date:
+                continue
+            old.append(r)
+    ds.delete_rows(1, max(ds.max_row, 1))
+    ds.append(H)
+    for c in ds[1]:
+        c.fill, c.font = HDR_FILL, HDR_FONT
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = BORDER
+    for r in sorted(draft_rows + old, key=lambda x: (str(x[0]), -int(x[1])), reverse=True):
+        ds.append(list(r) + [None] * (len(H) - len(r)))
+        for c in ds[ds.max_row]:
+            c.font = Font(name=FONT, size=10)
+            c.border = BORDER
+            c.alignment = Alignment(vertical="top", wrap_text=True)
+    for i, w in enumerate([11, 6, 34, 30, 90], 1):
+        ds.column_dimensions[get_column_letter(i)].width = w
+    ds.freeze_panes = "A2"
+    ds.auto_filter.ref = f"A1:E{max(ds.max_row, 1)}"
+
     if "说明" in wb.sheetnames:
         wb.move_sheet("说明", offset=len(wb.sheetnames) - 1)
     wb.save(xlsx)
     print(f"saved: {xlsx} | sheet {args.date}: {len(summary)} 问题, "
           f"{sum(len(s['answers']) for s in summary)} 回答, 共 {ws.max_row - 1} 行"
-          + (f" | 热点拓展: {len(new_rows) if ext else 0} 行" if ext else ""))
+          + (f" | 热点拓展: {len(new_rows) if ext else 0} 行" if ext else "")
+          + (f" | 拟答参考: {len(draft_rows)} 篇" if draft_rows else ""))
 
 if __name__ == "__main__":
     main()
