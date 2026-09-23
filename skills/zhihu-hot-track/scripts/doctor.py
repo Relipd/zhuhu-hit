@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""知乎热榜跟进 - 环境与数据自检(基础技术栈适配的诊断入口)。
+"""热榜跟进 - 环境与数据自检(基础技术栈适配的诊断入口)。
 
 为什么需要它
 ------------
-本流程依赖三类外部状态: 基础技术栈(zhihu skill 的 CLI 与凭证)、本机运行时
+本流程依赖三类外部状态: 基础技术栈(平台 CLI 与凭证)、本机运行时
 (Python/openpyxl/playwright-cli)、以及工作目录 ROOT 的历史数据。这三者任一变化
 都会让流程以晦涩的方式失败——实测过的场景包括: CLI 二进制被清理而凭证仍在、
 会话跨天后 ROOT 与"今天"都已改变、cookie 过期、Excel 依赖缺失。doctor 用一条命令
@@ -33,12 +33,17 @@ for _stream in (sys.stdout, sys.stderr):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import contract   # noqa: E402  数据契约:文件名 / 字段 / 值域的单一定义处
+import platform_profile as pf   # noqa: E402  L2 平台档案:CLI 名/档案摘要
 import zhihu_env  # noqa: E402
 
-REQUIRED_SCRIPTS = ["contract.py", "run.py", "question_fetch.py", "question_add.py", "fulltext.py", "search_many.py",
+REQUIRED_SCRIPTS = ["contract.py", "platform_profile.py", "run.py", "question_fetch.py", "question_add.py",
+                    "fulltext.py", "search_many.py", "render_answers.py", "regress_pipeline.py",
                     "check.py", "merge_extension.py", "verify_ext.py", "verify_html.py",
-                    "fill_excel.py", "gen_html.py", "topic_lib.py", "zhihu_env.py"]
-REQUIRED_FILES = ["prompt_swarm.md"]      # subagent 提示词模板(question_add --emit-prompt 依赖)
+                    "fill_excel.py", "gen_html.py", "topic_lib.py", "zhihu_env.py",
+                    "publish_queue.py", "extract_cookie.py"]
+REQUIRED_FILES = ["prompt_swarm.md", "prompt_gate.md", "prompt_gate_pre.md"]   # scripts/ 下的模板(swarm: question_add 依赖; gate: 前置判断; gate_pre: 阶段0 预闸门)
+REQUIRED_REFS = [os.path.join("references", "pitfalls.md"),   # 踩坑库(按需读)
+                 os.path.join("references", "scripts.md")]    # 脚本与模板清单(按需读)
 SKIP_DIRS = {"windows", "$recycle.bin", "system volume information", "node_modules",
              "appdata", "temp", "tmp", ".git", ".cache", "__pycache__",
              "program files", "program files (x86)", "programdata", "perflogs"}
@@ -48,7 +53,8 @@ def discover_roots(depth=2, extra_bases=None):
     """在常见位置寻找候选工作根目录(含 话题库/index.json 或 跟进excel-*.xlsx)。"""
 
     bases = []
-    env = os.environ.get("ZHIHU_TRACK_ROOTS")
+    env = (os.environ.get(pf.get("discover_env") or "")
+           or os.environ.get(pf.ROOTS_ENV_FALLBACK))
     if env:
         bases += [p for p in re.split(r"[;]", env) if p.strip()]
     if extra_bases:
@@ -129,44 +135,57 @@ def check_runtime(rep):
 
 
 def check_basestack(rep):
-    """基础技术栈: zhihu skill(CLI 安装/鉴权/入口)。"""
+    """基础技术栈: 平台 CLI(安装/鉴权/入口)。"""
+    rep.ok("平台档案", pf.summary())
+    cli_name = pf.get("cli_name")
     cli = zhihu_env.resolve_cli()
     src = zhihu_env.cli_source(cli)
     if cli:
-        rep.ok("zhihu-cli 可执行文件", f"{cli} (来源: {src})")
+        rep.ok(f"{cli_name} 可执行文件", f"{cli} (来源: {src})")
         v = zhihu_env.cli_version(cli)
-        rep.ok("zhihu-cli 版本", v or "读取失败(不影响调用)")
+        rep.ok(f"{cli_name} 版本", v or "读取失败(不影响调用)")
     else:
-        rep.fail("zhihu-cli 可执行文件", "未找到 -> " + zhihu_env.run_skill_setup_hint())
+        rep.fail(f"{cli_name} 可执行文件", "未找到 -> " + zhihu_env.run_skill_setup_hint())
 
     kc = zhihu_env.keychain_present()
     if kc is True:
         rep.ok("Access Secret(系统凭证库)", "已存在, 安装/修复 CLI 后可直接复用")
     elif kc is False:
-        rep.warn("Access Secret(系统凭证库)", "未发现 -> 安装后需按 zhihu skill 生成并注入")
+        rep.warn("Access Secret(系统凭证库)", f"未发现 -> 安装后需按 {pf.get('basestack_skill')} skill 生成并注入")
     else:
         rep.warn("Access Secret(系统凭证库)", "无法探测(非 Windows/macOS 或工具不可用)")
 
     st = zhihu_env.skill_status()
     if st is None:
-        rep.warn("zhihu skill 入口", f"run.ps1|run.sh status 不可用(dir={zhihu_env.skill_dir()})")
+        rep.warn(f"{pf.get('basestack_skill')} skill 入口",
+                 f"run.ps1|run.sh status 不可用(dir={zhihu_env.skill_dir()})")
     else:
-        rep.ok("zhihu skill 入口", "status 可解析")
+        rep.ok(f"{pf.get('basestack_skill')} skill 入口", "status 可解析")
         if st.get("installed") is False:
-            rep.warn("zhihu skill 判定", f"installed=false, next_action={st.get('next_action')}")
+            rep.warn(f"{pf.get('basestack_skill')} skill 判定",
+                     f"installed=false, next_action={st.get('next_action')}")
         upd = (st.get("skill") or {}).get("update_available")
         if upd:
-            rep.warn("zhihu skill 版本", "有可升级版本 -> 升级会覆盖本地对基础栈的改动, 见 SKILL.md 适配说明")
+            rep.warn(f"{pf.get('basestack_skill')} skill 版本",
+                     "有可升级版本 -> 升级会覆盖本地对基础栈的改动, 见 SKILL.md 适配说明")
 
-    pd = os.environ.get("PLAYWRIGHT_CLI_DIR", r"D:\claude code\playwright-cli")
+    # playwright-cli 仓库位置: 环境变量优先, 其次猜同级目录(实测它常与 skill 目录同级),
+    # 最后再试 npm 全局目录 —— 路径写死在脚本里会在换机后变成"静默退化"。
+    skill_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    npm_global = os.path.expandvars(r"%APPDATA%\npm\node_modules\@playwright\cli")
+    pd = (os.environ.get("PLAYWRIGHT_CLI_DIR")
+          or os.path.join(os.path.dirname(skill_root), "playwright-cli")
+          or npm_global)
     rep.ok("playwright-cli", pd if os.path.exists(os.path.join(pd, "playwright-cli.js"))
-           else f"未在 {pd} 找到 -> Cookie 获取将退化到方式 B(F12 手抄)")
+           else f"未在 {pd} 找到 -> 可设 PLAYWRIGHT_CLI_DIR; Cookie 获取将退化到方式 B(F12 手抄)")
 
 
 def check_scripts(rep):
     here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(here)          # skill 根目录(references/ 在这里)
     missing = [s for s in REQUIRED_SCRIPTS if not os.path.exists(os.path.join(here, s))]
     missing += [f for f in REQUIRED_FILES if not os.path.exists(os.path.join(here, f))]
+    missing += [f for f in REQUIRED_REFS if not os.path.exists(os.path.join(root, f))]
     if missing:
         rep.fail("skill 脚本完整性", "缺失: " + ", ".join(missing))
     else:
@@ -268,7 +287,7 @@ def main():
             for r in roots:
                 print("  -", r)
             if not roots:
-                print("  (未发现; 用 --root 显式指定, 或设环境变量 ZHIHU_TRACK_ROOTS 限定搜索范围)")
+                print(f"  (未发现; 用 --root 显式指定, 或设环境变量 {pf.ROOTS_ENV_FALLBACK} 限定搜索范围)")
         return 0
 
     rep = Report()

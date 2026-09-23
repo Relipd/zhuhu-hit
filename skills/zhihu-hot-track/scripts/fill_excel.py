@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""知乎热榜跟进 - 填月度 Excel(不存在时自动建模板; 新日期 sheet 插到最前)。
+"""热榜跟进 - 填月度 Excel(不存在时自动建模板; 新日期 sheet 插到最前)。
 
 用法:
   python fill_excel.py --root <工作根目录> --date 2026-08-08 [--xlsx <文件路径>]
@@ -10,6 +10,7 @@
 import argparse, io, json, os, sys
 
 import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(见 contract.py)
+import platform_profile as pf   # L2 平台档案:说明 sheet 里的来源说明取值处
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -38,7 +39,7 @@ DOC = [
      + ")。均由 Agent 阅读原文判断, 禁止脚本/程序判定。"),
     ("历史日期", "2026-09-11 及更早的 sheet 是旧三元模型(情绪判断: 积极/中立/消极), 保留原样不改写。"),
     ("示例行", "模板首次创建时含示例日 sheet, 正式抓取后由 fill_excel 替换。"),
-    ("数据来源", "zhihu-cli: hot + search zhihu 多变体查询合并。详见 skill 文档。"),
+    ("数据来源", pf.get("excel_source")),
 ]
 
 def ensure_workbook(path, year, month):
@@ -266,8 +267,22 @@ def main():
         ext_sheet.auto_filter.ref = f"A1:L{ext_sheet.max_row}"
         wb.move_sheet("热点拓展", offset=len(wb.sheetnames) - 2)
 
-    # ---- 拟答参考稿(ext_search/<D>/rank_<n>/draft_<n>.md, 2026-09-13 起) ----
+    # ---- 发帖短评(ext_search/<D>/rank_<n>/draft_<n>.md; 2026-09-16 起为 50–100 字犀利短评) ----
     # 与「热点拓展」同款累积表: 保留其他日期的行, 重写当日行, 表头只留一行(坑 31)。
+    # sheet 2026-09-16 由「拟答参考」更名而来: 遇到旧名就地改名, 历史行不分裂成两张表。
+    if contract.DRAFT_SHEET not in wb.sheetnames and contract.DRAFT_SHEET_LEGACY in wb.sheetnames:
+        wb[contract.DRAFT_SHEET_LEGACY].title = contract.DRAFT_SHEET
+    # 待发帖状态列取自 publish_queue.json(缺队列文件时留空, 历史日期不受影响)
+    qitems = {}
+    qp = contract.path_queue(args.root, args.date)
+    if os.path.exists(qp):
+        try:
+            qitems = json.load(io.open(qp, encoding="utf-8-sig")).get("items", {})
+        except Exception:
+            qitems = {}
+    q_label = {"ready": "待发", "published": "已发", "draft_pending": "过闸待写",
+               "over_daily_cap": "超上限", "mediocre": "打回·中庸",
+               "len_out_of_range": "打回·字数", "sharpness_unjudged": "待复核"}
     draft_rows = []
     for s in summary:
         rk = s["rank"]
@@ -283,7 +298,9 @@ def main():
         lines = raw.splitlines()
         title = lines[0].lstrip("# ").strip() if lines and lines[0].lstrip().startswith("#") else ""
         body = "\n".join(lines[1:] if title else lines).strip()
-        draft_rows.append([args.date, rk, s["title"], title, body])
+        qstate = (qitems.get(str(rk)) or {}).get("state")
+        draft_rows.append([args.date, rk, s["title"], title, body,
+                           q_label.get(qstate, "") if qstate else ""])
     H = list(contract.DRAFT_HEADERS)
     ds = wb[contract.DRAFT_SHEET] if contract.DRAFT_SHEET in wb.sheetnames \
         else wb.create_sheet(contract.DRAFT_SHEET)
@@ -305,10 +322,10 @@ def main():
             c.font = Font(name=FONT, size=10)
             c.border = BORDER
             c.alignment = Alignment(vertical="top", wrap_text=True)
-    for i, w in enumerate([11, 6, 34, 30, 90], 1):
+    for i, w in enumerate([11, 6, 34, 30, 90, 10], 1):
         ds.column_dimensions[get_column_letter(i)].width = w
     ds.freeze_panes = "A2"
-    ds.auto_filter.ref = f"A1:E{max(ds.max_row, 1)}"
+    ds.auto_filter.ref = f"A1:F{max(ds.max_row, 1)}"
 
     if "说明" in wb.sheetnames:
         wb.move_sheet("说明", offset=len(wb.sheetnames) - 1)
@@ -316,7 +333,8 @@ def main():
     print(f"saved: {xlsx} | sheet {args.date}: {len(summary)} 问题, "
           f"{sum(len(s['answers']) for s in summary)} 回答, 共 {ws.max_row - 1} 行"
           + (f" | 热点拓展: {len(new_rows) if ext else 0} 行" if ext else "")
-          + (f" | 拟答参考: {len(draft_rows)} 篇" if draft_rows else ""))
+          + (f" | 发帖短评: {len(draft_rows)} 条"
+             f"(待发 {sum(1 for r in draft_rows if r[5] == '待发')})" if draft_rows else ""))
 
 if __name__ == "__main__":
     main()

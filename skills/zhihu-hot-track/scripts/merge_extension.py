@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""知乎热榜跟进 - 热点拓展汇总(Agent Swarm 产出 -> extension.json)。
+"""热榜跟进 - 热点拓展汇总(Agent Swarm 产出 -> extension.json)。
 
 把各 subagent 产出的 ext_search/<D>/rank_<n>/rank_<n>.json 统一为
 raw/<D>/extension.json, 并做 schema 强校验。存在的原因:

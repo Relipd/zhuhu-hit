@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""知乎热榜跟进 - 数据抓取全流程(热榜 + 多变体搜索 + 合并去重)。
+"""热榜跟进 - 数据抓取全流程(热榜 + 多变体搜索 + 合并去重)。
 
 用法:
   python run.py --root <工作根目录> --date 2026-08-08 [--limit 20] [--variants 6] [--resume]
@@ -14,7 +14,7 @@
 """
 import argparse, json, os, re, subprocess, sys, time
 
-# 基础技术栈(zhihu skill)适配层与本脚本同目录, 见 zhihu_env.py 的模块说明
+# 基础技术栈适配层与本脚本同目录, 见 zhihu_env.py 的模块说明
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import contract   # noqa: E402  数据契约:文件名 / 字段 / 值域的单一定义处
 import zhihu_env  # noqa: E402

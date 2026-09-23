@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""知乎热榜跟进 - 回答全文补全(尽力而为)。
+"""热榜跟进 - 回答全文补全(尽力而为)。
 
-搜索接口的 ContentText 是摘要(截断)。本脚本用知乎网页 API
-(api/v4/answers/{id}) 尝试补全, 并通过 content_need_truncated 标记状态:
+搜索接口的 ContentText 是摘要(截断)。本脚本用平台网页 API
+(见 platform_profile.api_base) 尝试补全, 并通过 content_need_truncated 标记状态:
   full      已补全为全文
   truncated  网页 API 也截断(需网页登录 Cookie, 未提供) -> 保留摘要并标注
   summary    网页 API 无内容, 保留搜索摘要
@@ -19,6 +19,7 @@ import argparse, io, json, os, re, sys, time, urllib.request
 # 基础技术栈适配层与本脚本同目录(见 zhihu_env.py 的模块说明)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import contract   # noqa: E402  数据契约:文件名 / 字段 / 值域的单一定义处
+import platform_profile as pf   # noqa: E402  L2 平台档案:接口地址与 URL 模板
 import zhihu_env  # noqa: E402
 
 def qid_of(url):
@@ -27,14 +28,14 @@ def qid_of(url):
 
 def fetch_answer(aid, qid=None, cookie=None, timeout=20):
     """返回 (content_html, need_truncated) 或抛异常; 带 cookie 时附 Cookie/Referer 头解锁全文"""
-    url = f"https://www.zhihu.com/api/v4/answers/{aid}?include=content"
+    url = f"{pf.get('api_base')}/answers/{aid}?include=content"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
     }
     if cookie:
         headers["Cookie"] = cookie
         if qid:
-            headers["Referer"] = f"https://www.zhihu.com/question/{qid}"
+            headers["Referer"] = (pf.get("url_question") or "").format(qid=qid)
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         d = json.loads(r.read().decode("utf-8"))
@@ -113,7 +114,16 @@ def main():
         for rank, aid, err in failed[:10]:
             print(f"  - #{rank} answer={aid}: {err}")
         print("重跑本脚本(不带 --force)会自动只重试这些非 full 条目。")
-    print("truncated/summary 的回答为接口摘要, 备注列已由 fill_excel 自动标注; 全文需知乎网页登录")
+    # 死答清单(2026-09-21 起, 坑 78): 无正文的回答会卡 check「内容为空」, 在这里提前点名
+    dead = [(s["rank"], a["url"], a.get("error") or "内容为空")
+            for s in summary for a in s["answers"]
+            if a.get("content_status") == "summary" and not (a.get("text") or "").strip()]
+    if dead:
+        print(f"[死答] {len(dead)} 条无正文(疑已删/失效, 连 cookie 都取不到):")
+        for rank, url, why in dead:
+            print(f"  - #{rank} {url} ({why})")
+        print("处置(坑 78): 从 answers_summary.json 与 analysis.json **同步移除**该条再过 check; 不要伪造正文。")
+    print(f"truncated/summary 的回答为接口摘要, 备注列已由 fill_excel 自动标注; 全文需{pf.get('name')}网页登录")
     if cookie:
         print("提示: Cookie 按新策略长期保留复用(不删除, 见 Step 1.2); 分析请按全文复核(约束二)")
 

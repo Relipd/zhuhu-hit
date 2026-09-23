@@ -29,38 +29,44 @@ import subprocess
 import sys
 
 import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(见 contract.py)
+import platform_profile as pf   # 平台档案:CLI 名 / 环境变量名 / 凭证服务名 / 基础栈 skill 名
 
 __all__ = [
     "cli_home", "candidates", "skill_dir", "skill_status", "resolve_cli",
     "require_cli", "keychain_present", "diagnose", "cli_version", "run_skill_setup_hint",
 ]
 
-_SKILL_NAME = "zhihu"
+_SKILL_NAME = pf.get("basestack_skill")
 _cache = {}
 
 
-def _exe(name="zhihu-cli"):
+def _exe(name=None):
+    name = name or pf.get("cli_name")
     return name + ".exe" if os.name == "nt" else name
 
 
 def cli_home():
-    """CLI 安装根目录。规则必须与基础栈 zhihu skill 的 run.ps1 / run.sh 完全一致。"""
-    env = os.environ.get("ZHIHU_CLI_HOME")
+    """CLI 安装根目录。规则必须与基础栈 skill 的 run.ps1 / run.sh 完全一致。"""
+    env = os.environ.get(pf.get("cli_home_env") or "")
     if env:
         return env
+    defaults = pf.get("cli_home_defaults") or {}
     if os.name == "nt":
-        return os.path.join(os.environ.get("LOCALAPPDATA", ""), "ZhihuCLI")
+        var, rel = defaults.get("nt", ("LOCALAPPDATA", pf.get("cli_name")))
+        return os.path.join(os.environ.get(var, ""), rel)
     if sys.platform == "darwin":
-        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "zhihu-cli")
-    return os.path.join(os.path.expanduser("~"), ".local", "share", "zhihu-cli")
+        base, rel = defaults.get("darwin", ("~", "." + (pf.get("code") or "")))
+    else:
+        base, rel = defaults.get("linux", ("~", "." + (pf.get("code") or "")))
+    return os.path.join(os.path.expanduser(base), rel)
 
 
 def candidates():
     """按优先级返回 CLI 候选绝对路径(附来源标签)。"""
     out = []
-    env = os.environ.get("ZHIHU_CLI")
+    env = os.environ.get(pf.get("cli_env") or "")
     if env:
-        out.append((env, "env:ZHIHU_CLI"))
+        out.append((env, "env:" + (pf.get("cli_env") or "")))
     home = cli_home()
     if home:
         out.append((os.path.join(home, "current", _exe()), "cli_home"))
@@ -70,10 +76,11 @@ def candidates():
     return out
 
 
-def skill_dir(name=_SKILL_NAME):
+def skill_dir(name=None):
     """定位基础栈 skill 目录:环境变量优先,其次按同级目录推断
-    (本文件位于 <skills_root>/zhihu-hot-track/scripts/,基础栈在 <skills_root>/zhihu/)。"""
-    env = os.environ.get("ZHIHU_SKILL_DIR")
+    (本文件位于 <skills_root>/<本 skill>/scripts/,基础栈在 <skills_root>/<平台 skill>/)。"""
+    name = name or _SKILL_NAME
+    env = os.environ.get(pf.get("basestack_env") or "")
     if env and os.path.isdir(env):
         return env
     here = os.path.dirname(os.path.abspath(__file__))
@@ -164,9 +171,9 @@ def cli_source(path):
 
 
 def keychain_present():
-    """自行探测系统凭证库中是否已有 zhihu-cli 的 Access Secret。
+    """自行探测系统凭证库中是否已有平台 CLI 的 Access Secret。
 
-    与基础栈解耦: 即使 zhihu skill 升级后不再输出凭证相关字段, 本函数仍然可用(见踩坑 19)。
+    与基础栈解耦: 即使基础栈 skill 升级后不再输出凭证相关字段, 本函数仍然可用(见踩坑 19)。
     返回 True / False / None(无法判断)。
     """
     if "keychain" in _cache:
@@ -176,10 +183,10 @@ def keychain_present():
         if os.name == "nt":
             r = subprocess.run(["cmdkey", "/list"], capture_output=True, text=True,
                                encoding="utf-8", errors="replace", timeout=20)
-            val = "zhihu-cli:access-secret" in (r.stdout or "")
+            val = (pf.get("keychain_services") or ("",))[0] in (r.stdout or "")
         elif sys.platform == "darwin":
             val = False
-            for svc in ("zhihu-cli:access-secret", "zhihu-cli"):
+            for svc in (pf.get("keychain_services") or ()):
                 r = subprocess.run(["security", "find-generic-password", "-s", svc],
                                    capture_output=True, text=True, timeout=20)
                 if r.returncode == 0:
@@ -271,18 +278,20 @@ def require_cli():
     if kc is True:
         cred = "系统凭证库中已有 Access Secret —— 装好 CLI 即可直接复用, 无需重新申请。"
     elif kc is False:
-        cred = "系统凭证库中未发现 Access Secret —— 安装后需要按 zhihu skill 流程生成并注入。"
+        cred = f"系统凭证库中未发现 Access Secret —— 安装后需要按 {pf.get('basestack_skill')} skill 流程生成并注入。"
     else:
         cred = "无法探测系统凭证库(非 Windows/macOS 或工具不可用)—— 安装后请跑 auth status --verify 确认。"
     raise RuntimeError(
-        "未找到可用的 zhihu-cli(基础技术栈: zhihu skill)。\n"
+        "未找到可用的 {cli}(基础技术栈: {skill} skill)。\n"
         "  候选路径:\n{cands}\n"
         "  已尝试的兜底: 调用 {skill_dir} 的 run.ps1|run.sh status 读取 binary_path\n"
         "  凭证状态: {cred}\n"
         "修复方式:\n"
         "  1) 经用户同意后安装/修复基础栈: {hint}\n"
-        "  2) 或设置 ZHIHU_CLI 指向已有可执行文件\n"
-        "  3) 自定义安装位置请设 ZHIHU_CLI_HOME(规则与 zhihu skill 一致)\n"
+        "  2) 或设置 {cli_env} 指向已有可执行文件\n"
+        "  3) 自定义安装位置请设 {home_env}(规则与基础栈 skill 一致)\n"
         "  排查工具: python scripts/doctor.py --root <ROOT>".format(
+            cli=pf.get("cli_name"), skill=pf.get("basestack_skill"),
+            cli_env=pf.get("cli_env"), home_env=pf.get("cli_home_env"),
             cands=cand_lines, skill_dir=rep["zhihu_skill"]["dir"], cred=cred,
             hint=rep["setup_hint"]))

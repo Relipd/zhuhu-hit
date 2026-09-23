@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""知乎热榜跟进 - HTML 交付物结构校验(约束四自动校验)。
+"""热榜跟进 - HTML 交付物结构校验(约束四自动校验)。
 
 gen_html.py 只负责生成, 不校验; 历史上靠 Agent 临时手写 PowerShell 逐项核对,
 既慢又易错(实测因 PS 语法错误重跑)。本脚本把约束四的校验固化成一条命令。
@@ -7,8 +7,8 @@ gen_html.py 只负责生成, 不校验; 历史上靠 Agent 临时手写 PowerShe
 用法: python verify_html.py --root <ROOT> --date 2026-09-11
 
 校验项(逐条 PASS/FAIL):
-  1. 根入口 <root>/知乎热榜跟进-<D>.html 存在, 且 meta refresh 指向 <目录>/index.html
-  2. 目录 <root>/知乎热榜跟进-<D>/ 与 index.html 存在
+  1. 根入口 <root>/<报告前缀>-<D>.html 存在, 且 meta refresh 指向 <目录>/index.html
+  2. 目录 <root>/<报告前缀>-<D>/ 与 index.html 存在
   3. 详情页数 == 热榜条数(q01..qNN 连续无缺号)
   4. 每页回答折叠数 == 该问题回答数(每条回答固定 2 个 <details>: 卡片 + 原文)
   5. 翻页链接衔接: qNN 的「上一题」=q(N-1)、「下一题」=q(N+1), 首末页为 class="off" href="#"
@@ -161,7 +161,8 @@ def main():
         check("情绪模型未串用", got_legacy == exp_legacy,
               f"旧三元徽章 页面{got_legacy} vs 分析{exp_legacy}")
 
-    # 7c. 拟答参考稿渲染对账(2026-09-13 新增): 有 draft_<n>.md 的 rank 必须在详情页出现拟答块,
+    # 7c. 发帖短评渲染对账(2026-09-13 新增; 2026-09-16 起为 50–100 字犀利短评):
+    #     有 draft_<n>.md 的 rank 必须在详情页出现短评块,
     # 没有稿子的 rank 不许凭空出现该块。历史日期没有稿子 ⇒ 本项自动跳过。
     draft_bad, n_draft = [], 0
     for i in range(1, total + 1):
@@ -178,7 +179,7 @@ def main():
         if has_block and not has_file:
             draft_bad.append(f"q{i:02d} 无稿却渲染了拟答块")
     if n_draft or draft_bad:
-        check("拟答参考稿渲染对账", not draft_bad, "; ".join(draft_bad[:8]))
+        check("发帖短评渲染对账", not draft_bad, "; ".join(draft_bad[:8]))
 
     # 8. 拓展范围(2026-09-13 起为**全部条目**): 有多少 rank 产出过 extension.json, 就该有多少页有拓展块。
     # 注: 页脚含「热点拓展」说明文字, 故用 HTML_EXT_MARK 标题判定而非关键词「热点拓展」。

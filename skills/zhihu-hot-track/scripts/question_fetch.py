@@ -49,11 +49,12 @@ for _s in (sys.stdout, sys.stderr):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import contract   # noqa: E402  数据契约:文件名 / 字段 / 值域的单一定义处
+import platform_profile as pf   # noqa: E402  L2 平台档案:接口地址与 URL 模板
 import zhihu_env  # noqa: E402
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
-API = "https://www.zhihu.com/api/v4"
+API = pf.get("api_base")
 # 列表接口的 include: 只能写"需要服务端额外注入"的字段。
 # 教训(2026-09-11 实测): 混入 id / url / author.name 这类**默认字段**的键,
 # 会让整个 include 部分失效 —— voteup_count 直接变成 None(表现: 抓到回答但赞数全 0)。
@@ -83,7 +84,7 @@ def load_cookie(root, date):
 def get_json(url, cookie=None, timeout=25, retry=None, backoff=None):
     """带退避重试的 JSON 请求(单一入口, 三种条目类型共用)。
 
-    为什么必须重试: 实测知乎网页接口在连续请求后会偶发 403(限流), 而**同一个 Cookie、
+    为什么必须重试: 实测平台网页接口在连续请求后会偶发 403(限流), 而**同一个 Cookie、
     同一个 URL 单独请求又返回 200**。2026-09-12 的 rank5 就是这样一次瞬时 403 被上层
     try/except 兜底成 search_fallback, 结果该问题既丢了主数据源、也丢了 total_answers/coverage
     (覆盖率标注的依据)。此处重试后, 上层只在真正连续失败时才降级。
@@ -91,7 +92,7 @@ def get_json(url, cookie=None, timeout=25, retry=None, backoff=None):
     retry = _RETRY if retry is None else retry
     backoff = _BACKOFF if backoff is None else backoff
     headers = {"User-Agent": UA, "Accept": "application/json, text/plain, */*",
-               "Referer": "https://www.zhihu.com/"}
+               "Referer": (pf.get("referer") or "")}
     if cookie:
         headers["Cookie"] = cookie
     last = None
@@ -155,7 +156,7 @@ def fetch_question(qid, top, cookie, delay, pages=1):
             content = strip_html(a.get("content"))
             trunc = bool(a.get("content_need_truncated"))
             answers.append({
-                "url": f"https://www.zhihu.com/question/{qid}/answer/{aid}",
+                "url": (pf.get("url_answer") or "").format(qid=qid, aid=aid),
                 "text": content,
                 "likes": a.get("voteup_count") or 0,
                 "author": ((a.get("author") or {}).get("name") or ""),
@@ -174,7 +175,7 @@ def fetch_article(pid, cookie):
     d = get_json(f"{API}/articles/{pid}?include=content,voteup_count,comment_count,author,title", cookie)
     content = strip_html(d.get("content"))
     return [{
-        "url": f"https://zhuanlan.zhihu.com/p/{pid}",
+        "url": (pf.get("url_article") or "").format(pid=pid),
         "text": content,
         "likes": d.get("voteup_count") or 0,
         "author": ((d.get("author") or {}).get("name") or ""),
@@ -187,8 +188,8 @@ def fetch_answer(aid, qid, cookie):
     d = get_json(f"{API}/answers/{aid}?include=content,voteup_count,comment_count,author", cookie)
     content = strip_html(d.get("content"))
     return [{
-        "url": f"https://www.zhihu.com/question/{qid}/answer/{aid}" if qid
-               else f"https://www.zhihu.com/answer/{aid}",
+        "url": (pf.get("url_answer") or "").format(qid=qid, aid=aid) if qid
+               else (pf.get("url_answer_bare") or "").format(aid=aid),
         "text": content,
         "likes": d.get("voteup_count") or 0,
         "author": ((d.get("author") or {}).get("name") or ""),
@@ -196,6 +197,29 @@ def fetch_answer(aid, qid, cookie):
         "content_status": "truncated" if d.get("content_need_truncated") else
                           ("full" if content else "summary"),
     }], 1, None
+
+
+def preflight_cookie(items, cookie, delay):
+    """cookie 预检(2026-09-21 起): 答案内容接口失效时全部 summary/403 ——
+    用第 1 个问题类条目的前几条回答试抓, 2~3 个请求内快速失败, 别把 99+ 请求烧完才发现。
+    判据: 前 3 条回答 content_status **全部** summary 即判失效(有任一 full/truncated 即放行)。"""
+    it0 = next((it for it in items if kind_of(it.get("Url", "")) == "question"), None)
+    if it0 is None:
+        return True                      # 榜首无问题类条目(全是文章/回答), 预检无对象, 放行
+    try:
+        answers, _, _ = fetch_question(qid_of(it0["Url"]), 3, cookie, delay, pages=1)
+    except Exception as e:
+        print(f"[preflight] 第 1 题抓取即失败: {type(e).__name__}: {e}")
+        return False
+    if not answers:
+        print("[preflight] 第 1 题答案列表为空")
+        return False
+    stat = [a.get("content_status") for a in answers]
+    if all(s == "summary" for s in stat):
+        print(f"[preflight] 前 {len(stat)} 条回答全是 summary(无任何全文) —— cookie 大概率失效")
+        return False
+    print(f"[preflight] OK({'/'.join(stat[:3])}) —— cookie 可用")
+    return True
 
 
 def main():
@@ -210,6 +234,8 @@ def main():
     ap.add_argument("--out", default=None, help="输出路径, 默认覆盖 raw/<D>/answers_summary.json")
     ap.add_argument("--no-merge", action="store_true",
                     help="只用网页结果, 不并入搜索召回(默认并入: web ∪ search 并集)")
+    ap.add_argument("--no-preflight", action="store_true",
+                    help="跳过 cookie 预检(默认开跑前用第 1 题试抓 2~3 个请求, 失效即中止)")
     args = ap.parse_args()
 
     global _RETRY, _BACKOFF
@@ -227,6 +253,11 @@ def main():
     cookie, cookie_path = load_cookie(args.root, args.date)
     print("[info] cookie: " + (f"复用 {cookie_path}(不验证、不删除)" if cookie
                                else "无 —— 网页接口可能 403, 将降级搜索兜底"))
+
+    if not args.no_preflight and not preflight_cookie(items, cookie, args.delay):
+        sys.exit("[FATAL] cookie 预检未通过 —— 按方式 C 重提: playwright-cli 登录态 storage-state save → "
+                 f"python extract_cookie.py --state <zhihu-state.json> --out {cookie_path or 'raw/<D>/cookies.txt'}"
+                 " → 重跑本命令(确实要跳过预检: --no-preflight)")
 
     out_path = args.out or cur_path
     summary, stats = [], {"web_question": 0, "web_article": 0, "web_answer": 0,

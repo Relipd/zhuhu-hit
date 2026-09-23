@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""知乎热榜跟进 - 单问题追加追踪(把"单独搜的一个问题"聚合进当日交付物)。
+"""热榜跟进 - 单问题追加追踪(把"单独搜的一个问题"聚合进当日交付物)。
 
 定位
 ----
@@ -29,6 +29,7 @@ import sys
 import time
 
 import contract
+import platform_profile as pf   # L2 平台档案:问题/回答 URL 模板
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import question_fetch as qf  # noqa: E402  复用问题维度抓取(接口/解析/重试全在同一处)
@@ -107,7 +108,7 @@ def main():
         sys.exit("[FAIL] 从链接中解析不到 id: %s" % url)
     # 回答链接 → 追踪它所属的**问题**(那才是有拓展价值的目标)
     if kind == "answer":
-        kind, url = "question", "https://www.zhihu.com/question/%s" % qid
+        kind, url = "question", (pf.get("url_question") or "").format(qid=qid)
 
     ans_path = contract.path_answers(args.root, args.date)
     ext_path = contract.path_extra(args.root, args.date)

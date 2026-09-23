@@ -33,7 +33,7 @@
 分层(谁依赖谁)
 --------------
     contract.py          ← 所有脚本(只提供常量与路径函数,无业务逻辑)
-    zhihu_env.py         ← 需要访问知乎 CLI / 凭证的脚本(run / question_fetch / fulltext / doctor)
+    zhihu_env.py         ← 需要访问平台 CLI / 凭证的脚本(run / question_fetch / fulltext / doctor)
     其余脚本             ← 只依赖 contract(纯文件与字段处理,与采集平台无关)
 
 换主题或换平台时改哪里
@@ -46,6 +46,8 @@
 """
 import os
 import re
+
+import platform_profile as pf          # L2 平台档案(换平台的唯一注入点)
 
 # ────────────────────────────── 目录与文件名 ──────────────────────────────
 
@@ -116,8 +118,9 @@ LIB_CAT_SYNONYMS = {
     "文学与文化": "历史与社会生活",
 }
 
-REPORT_TITLE = "知乎热榜跟进"           # 交付物名称前缀(换主题改这一处)
-XLSX_PREFIX = "跟进excel"               # 月度表格名称前缀
+# 交付物命名来自平台档案(platform_profile.py); 换平台只改档案, 本文件不动。
+REPORT_TITLE = pf.get("report_title")   # 交付物名称前缀(取自平台档案的 report_title)
+XLSX_PREFIX = pf.get("xlsx_prefix")     # 月度表格名称前缀, 如「跟进excel」
 
 HTML_INDEX_NAME = "index.html"
 HTML_PAGE_FMT = "q{:02d}.html"         # 详情页命名
@@ -189,7 +192,7 @@ EXT_RELATION_CSS = {"印证": "ok", "反驳": "no", "边界": "mid"}
 EXT_DROPPED_FIELDS = ("type", "content", "url", "note", "reason")
 
 # ── 信源门槛与事实性复核(2026-09-12 用户要求) ──────────────────────────────
-# 前提: 本流程的信源集中在知乎, 交付的其实是**「知乎平台公众言论」的事实性提炼**, 不是已核实的事实。
+# 前提: 本流程的信源集中在单一内容平台, 交付的其实是**「该平台公众言论」的事实性提炼**, 不是已核实的事实。
 # 因此采信标准按「言论」定: 谁说的(归属) + 有没有可核锚点(数字/条号/公报口径) + 是事实还是主张。
 # 判定权在**采集端(subagent)**; 脚本只做兜底打标 —— 实测纯正则识别「具名主体」会把
 # 「华为发布 Mate XT 2」这类专有名词判成无具名(31/65 条落入"待定"), 误杀率过高, **不可硬拦截**。
@@ -260,7 +263,7 @@ EXT_LINK_TIMEOUT = 15              # 链接探活超时秒
 EXT_LINK_DELAY = 0.4               # 探活间隔秒
 EXT_LINK_RETRY = 2                 # 探活尝试次数(5xx/超时/连接错误才重试; 4xx 立即返回)
 EXT_LINK_RETRY_BACKOFF = 1.5       # 探活重试退避基数秒(第 n 次等 n*backoff)
-# 哪些探活结果才算「来源已失效」。2026-09-13 实测: 探活上百条 url 时知乎侧 Cloudflare 会成片返回
+# 哪些探活结果才算「来源已失效」。2026-09-13 实测: 探活上百条 url 时平台侧 Cloudflare 会成片返回
 # 522(一次跑出 22 条), 而 gen_html 旧逻辑把**一切非 200** 都渲染成「来源已失效」——等于给活链接
 # 贴死链标签。4xx(除 429 限流)才是确定性不可达; 5xx/超时/连接错误只能算「未探明」。
 EXT_LINK_DEAD = ("400", "401", "402", "404", "405", "406", "410", "451",
@@ -272,18 +275,22 @@ EXT_OFFICIAL_HOSTS = ("gov.cn", "stats.gov.cn", "court.gov.cn", "spp.gov.cn", "n
 EXT_MEDIA_HOSTS = ("xinhuanet.com", "news.cn", "people.com.cn", "cctv.com", "thepaper.cn",
                    "caixin.com", "jiemian.com", "yicai.com", "infzm.com", "bjnews.com.cn",
                    "chinanews.com.cn", "nbd.com.cn", "21jingji.com", "stcn.com")
-EXT_HOST_KINDS = (("zhuanlan.zhihu.com", "站内专栏"), ("www.zhihu.com", "站内回答"),
-                  ("zhihu.com", "站内回答"))
+# 站内域名 → 来源类别(来自平台档案; 换平台改档案)
+EXT_HOST_KINDS = pf.get("site_hosts") or ()
 # 想法的出处(可选但推荐): 该想法提炼自哪条回答 → 直接把链接与序号附上去
-# {"answer_index": 3, "likes": 294, "url": "https://www.zhihu.com/question/.../answer/..."}
+# {"answer_index": 3, "likes": 294, "url": "<该平台的回答链接>"}
 EXT_CHAIN_SOURCE = "source"
 
-# ── 拟答参考稿(2026-09-13 用户要求) ────────────────────────────────────────
-# 每个 rank 一份成文回答稿, 由拓展 subagent 顺带产出, 落在 ext_search/<D>/rank_<n>/draft_<n>.md。
-# 要求: ≤500 字、无链接、纯路人视角不立人设、观点鲜明、讲清发生逻辑与诉求矛盾(见 prompt_swarm.md)。
+# ── 发帖短评(2026-09-16 用户要求: 由「≤500 字拟答参考稿」改为 50–100 字犀利短评) ──
+# 每个候选 rank 一份短评, 落在 ext_search/<D>/rank_<n>/draft_<n>.md。
+# 为什么改短: 发帖物是**一条态度鲜明的短评**, 不是一篇完整回答。字数上限把"讲清机制"压成
+# "一句判断 + 一句机制/代价 + 一句落点", 顺带挤掉铺垫、缓冲与和稀泥
+# (用户原话: 语言一定要犀利; 字数 50–100 字左右)。
 DRAFT_FMT = "draft_%d.md"
-DRAFT_SHEET = "拟答参考"                 # Excel 里的累积 sheet(与「热点拓展」同款处理)
-DRAFT_HEADERS = ("日期", "排名", "问题标题", "拟答标题", "正文")
+DRAFT_LEN = (50, 100)                    # 正文(不含首行标题)字数区间; 越界即打回重写
+DRAFT_SHEET = "发帖短评"                  # Excel 累积 sheet(2026-09-16 由「拟答参考」更名)
+DRAFT_SHEET_LEGACY = "拟答参考"           # 旧名: fill_excel 遇到即改名, 历史行不分裂成两张表
+DRAFT_HEADERS = ("日期", "排名", "问题标题", "拟答标题", "正文", "待发帖")
 
 # ── 书写 skill: 自我学习 loop(2026-09-13 用户要求) ────────────────────────
 # 流程: 高赞回答 → subagent 只提取「书写逻辑与语言习惯」(**不涉及具体内容**)
@@ -295,17 +302,69 @@ STYLE_FILE = "书写skill.md"               # 主 Agent 汇编后的最终稿(�
 STYLE_POOL_FMT = "style_batch_%s.json"    # 各提取 subagent 的产出(批次片段)
 STYLE_MERGE = "style_merge.json"          # 汇总候选池(带维度/频次, 供主 Agent 取舍)
 # 提取维度(固定值域, 便于汇总与去重): 只看"怎么写", 不看"写了什么"
+# 2026-09-16 增「犀利度与锋芒」: 用户要求发帖语言一定要犀利, 且**前期学习就要关注这一点** ——
+# 于是把它变成一个独立提取维度(而不是塞进「情绪表达」), 让高赞回答里"怎么把话说狠"的手法
+# 被单独学出来、单独进汇编稿。
 STYLE_DIMS = ("开头方式", "结构推进", "句长与节奏", "人称与口吻", "情绪表达",
-              "论证顺序", "结尾方式", "标点与格式", "词汇习惯", "避免的写法")
+              "论证顺序", "结尾方式", "标点与格式", "词汇习惯", "犀利度与锋芒",
+              "避免的写法")
 
-# ── 发布策略(2026-09-13 用户指定) ────────────────────────────────────────
-# 用户实测收到「您的回答过于频繁，已达到本日或本周数量上限」——这是**日/周配额**, 不是短冷却,
-# 因此把"每条都发"改成制度化的 **每日前 N 条发布、其余只出稿不发布**:
-PUBLISH_TOP_N = 15                       # 每天最多发布的条数(按 rank 前 N); 其余标 draft_only
-PUBLISH_LIMIT_RE = (r"过于频繁|数量上限|稍后重试|操作频繁|发布上限")
-LEDGER_FILE = "publish_ledger.json"       # 发布台账: "发到哪一步"的唯一事实源
-LEDGER_STATES = ("published", "blocked_limit", "blocked", "pending_manual",
-                 "draft_only", "gen_failed")
+# ── 待发帖列 + 前置判断(2026-09-16 用户要求; 同日**删除自动发帖**) ────────────
+# **自动发帖已删除**(用户: "把自动发帖删了, 目前来说收益太少"): 流程不再驱动浏览器点击发布
+# (`publish_draft.py` / `publish_batch.py` / `make_manual_publish.py` 三件套已移除),
+# 只产出**待发帖列** `待发帖-<D>.md`(逐条可复制), 由人复制粘贴发布, 再回填状态。
+#
+# 三道闸门(顺序即优先级; 判定权在判定 subagent, 脚本只做兜底复核 —— 与信源门槛同一套纪律):
+#   ① 是否时政: 非时政**不进列**(只出稿);
+#   ② 时政: swarm 发散是否拿到**评论区(或回答区)没有的增量信息** —— 只是复述已有观点则不进列;
+#   ③ 过①②者写 50–100 字短评, 再查**言语中庸** —— 命中即打回重写。
+# 上限: 每日最多 PUBLISH_MAX_PER_DAY 条入列, **可以少、不可以多**; 被打回的那条**不递补**。
+PUBLISH_MAX_PER_DAY = 3                  # 每日最多入列条数(硬上限)
+QUEUE_FILE = "publish_queue.json"        # 待发帖列: "该发哪几条/发到哪一步"的唯一事实源
+VERDICT_FILE = "publish_verdicts.json"   # 前置判断结果(判定 subagent 撰写, publish_queue 复核)
+VERDICT_PRE_FILE = "publish_verdicts_pre.json"   # 阶段0 预闸门(2026-09-21 起): 只判时政, 检索前跑
+VERDICT_PRE_REQUIRED = ("rank", "is_political", "political_basis", "why")
+QUEUE_MD_FMT = "待发帖-%s.md"             # 人读清单(在 ROOT 下, 逐条可复制)
+GATE_DIRNAME = "gate"                    # ext_search/<D>/gate/ —— 判定提示词与留档
+FILE_COMMENTS = "comments.json"          # 评论区基线(可选输入): {"<rank>": [{"text": ...}]}; 缺则降级为回答区
+# 状态取值:
+#   ready=可发(推荐位) / draft_pending=过闸待写稿 / published=人工已发(回填)
+#   verdict_missing=缺前置判断(先跑判定 subagent) / skip_not_political / skip_no_increment=未过闸
+#   over_daily_cap=过了闸但超出当日建议位 —— 备选: 稿已写、照常进待发帖列与 HTML,
+#                   人工终审可换掉任一推荐条目改发它(2026-09-21 起, 过闸全写+排序推荐)
+#   len_out_of_range / mediocre=短评不合格, 打回重写 / sharpness_unjudged=犀利度未复核
+QUEUE_STATES = ("ready", "draft_pending", "published", "verdict_missing",
+                "skip_not_political", "skip_no_increment", "over_daily_cap",
+                "len_out_of_range", "mediocre", "sharpness_unjudged")
+# 判定条目字段: 前七个由**阶段一**(时政 + 增量)填; 后两个由**阶段二**(读到短评后)补 ——
+# 阶段二覆盖全部已写稿的过闸条目(2026-09-21 起过闸全写, 条数通常 = 过闸数), 由主 Agent 亲自读短评填。
+VERDICT_REQUIRED = ("rank", "is_political", "political_basis", "has_increment",
+                    "increment_basis", "baseline", "why")
+VERDICT_BASELINES = ("comments", "answers")      # 增量比对基线: 评论区 / 回答区
+VERDICT_SHARP_FIELDS = ("mediocre", "sharpness_why")
+# 时政信号(脚本**初判**, 不硬拦): 类目命中或关键词命中 ≥2 即报信号;
+# 判定 subagent 若给出相反结论, publish_queue 会把它列为**分歧项**交主 Agent 复核。
+POLITICAL_CATS = ("外交政策与国际关系", "国际冲突与军事", "司法与法治")
+POLITICAL_HINTS = (
+    "政策", "法规", "条例", "办法", "通知", "通报", "两会", "人大", "政协", "国务院",
+    "中央", "部委", "纪委", "监察", "官员", "干部", "政府", "政务", "公权力", "信访",
+    "外交", "制裁", "关税", "出口管制", "领事", "大使", "条约", "峰会",
+    "军事", "军演", "战争", "停火", "国防", "征兵", "领土", "主权",
+    "选举", "总统", "议会", "执政", "立法", "司法", "判决", "起诉", "立案",
+    "白宫", "欧盟", "北约", "联合国", "美国", "俄罗斯", "乌克兰", "以色列", "伊朗",
+)
+# 中庸/和稀泥句式黑名单(**硬闸门**, 正则): 命中即打回重写 ——
+# 不采信任何"已经很犀利"的自述(与"不信 subagent 自述"同一条纪律)。
+MEDIOCRE_PATTERNS = (
+    r"一方面.{0,15}另一方面", r"见仁见智", r"仁者见仁", r"一概而论", r"一分为二",
+    r"值得(深思|思考|反思)", r"各有各的(道理|难处|立场)", r"没有绝对", r"因人而异",
+    r"辩证(地)?(看|看待)", r"具体情况具体分析", r"既要.{0,12}也要",
+    r"理性(看待|对待|讨论)", r"客观(地)?(说|讲|来说)", r"冷静(看待|对待)",
+    r"无可厚非", r"换位思考", r"多(一份|点)理解", r"把握好?(度|分寸)",
+    r"时间会(证明|给出)", r"交给时间", r"拭目以待", r"不可否认",
+    r"(希望|相信)(有关部门|相关方面)", r"不宜(过度|过激)", r"要看到.{0,10}另一面",
+)
+GATE_REPEAT_JACCARD = 0.30               # 证据与基线文本的 3-gram Jaccard ≥ 此值 ⇒ 疑似复述
 
 # ────────────────────────────── HTML 结构标记 ──────────────────────────────
 # 生成方(gen_html)与校验方(verify_html)共用,避免两侧各自硬编码而漂移
@@ -355,7 +414,7 @@ def path_cookie(root, date):
 
 
 def ext_search_dir(root, date):
-    """拓展工作目录(各 rank 的链/检索留档/拟答稿都在这里)。"""
+    """拓展工作目录(各 rank 的链/检索留档/发帖短评都在这里)。"""
     return os.path.join(root, "ext_search", date)
 
 
@@ -364,8 +423,39 @@ def rank_dir(root, date, rank):
 
 
 def path_draft(root, date, rank):
-    """拟答参考稿路径。文件不存在即视为该 rank 没产出稿子(历史日期都没有)。"""
+    """发帖短评路径(2026-09-16 起为 50–100 字犀利短评)。文件不存在即视为该 rank 没产出稿子。"""
     return os.path.join(rank_dir(root, date, rank), DRAFT_FMT % int(rank))
+
+
+def path_queue(root, date):
+    """待发帖列(raw/<date>/publish_queue.json): 该发哪几条/发到哪一步的唯一事实源。"""
+    return os.path.join(day_dir(root, date), QUEUE_FILE)
+
+
+def path_verdicts(root, date):
+    """前置判断结果(raw/<date>/publish_verdicts.json), 由判定 subagent 撰写。"""
+    return os.path.join(day_dir(root, date), VERDICT_FILE)
+
+
+def path_verdicts_pre(root, date):
+    """阶段0 预闸门结果(raw/<date>/publish_verdicts_pre.json): 只判时政, 检索前跑,
+    用于把明显非时政的 rank 挡在发散检索之外(宁多搜不误杀: 拿不准一律判是)。"""
+    return os.path.join(day_dir(root, date), VERDICT_PRE_FILE)
+
+
+def path_comments(root, date):
+    """评论区基线(可选输入, raw/<date>/comments.json)。"""
+    return os.path.join(day_dir(root, date), FILE_COMMENTS)
+
+
+def queue_md_path(root, date):
+    """人读待发帖清单(<ROOT>/待发帖-<date>.md, 逐条可复制)。"""
+    return os.path.join(root, QUEUE_MD_FMT % date)
+
+
+def gate_dir(root, date):
+    """前置判断工作目录(ext_search/<date>/gate/: 判定提示词与留档)。"""
+    return os.path.join(ext_search_dir(root, date), GATE_DIRNAME)
 
 
 def path_extra(root, date):
@@ -425,7 +515,7 @@ def xlsx_glob(root):
 
 
 def report_name(date):
-    """交付物基名:知乎热榜跟进-2026-09-12"""
+    """交付物基名, 如「<报告前缀>-2026-09-12」(前缀取自平台档案)"""
     return f"{REPORT_TITLE}-{date}"
 
 

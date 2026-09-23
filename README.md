@@ -1,6 +1,6 @@
 # zhuhu-hit
 
-把知乎热榜整理成可长期回溯的追踪档案:取当日热榜与回答 → 逐条归纳分析 → 对**全部 20 个话题**做延伸检索 → 按平台高赞写法成文 → 产出月度 Excel 与分页网页,并把当日的案例、话题与书写规范累积下来。
+把知乎热榜整理成可长期回溯的追踪档案:取当日热榜与回答 → 逐条归纳分析 → **两阶段发布闸门**(预筛 + 增量复核)只对过闸话题做延伸检索 → 按平台高赞写法成文 → 产出月度 Excel 与分页网页,并把当日的案例、话题与书写规范累积下来。
 ！！后续发布别做，会被封号，后续会调整
 
 ## 这是什么
@@ -42,11 +42,12 @@
 | 3 补全全文 | 为内容被截断的回答补齐正文,并标注该回答的获取状态 | `fulltext.py` |
 | 4 逐条分析 | 阅读每条回答,归纳立场 / 解决思路 / 判断逻辑 / 情绪倾向 | Agent |
 | 5 情绪标注 | 按词表判**情绪标签(≤3)+ 强度(1–5)+ 指向(6 类)**,必填理由;分批下放子任务,主 Agent 只复核分歧 | Agent(子任务并行) |
-| 6 话题延伸 | **全部 20 个话题**各由一个子任务独立检索:每轮发送一条查询,依据上一轮结果决定下一条,收敛即止 | Agent(子任务并行) |
-| 7 汇总与复核 | 延伸结果经链式强校验与 `source` 对账后合并,随即自动做事实性复核(信源门槛 + 多源印证 + 链接探活) | `merge_extension.py`、`verify_ext.py` |
-| 8 书写自学 | ① 从高赞回答里提炼"书写逻辑"(只提怎么写)→ ② 主 Agent 按奥卡姆剃刀汇编成 `书写skill.md` → ③ 据此成文 | Agent(子任务并行) |
-| 9 校验与产出 | 数据完整性校验 → 填表 → 生成网页 → 网页结构校验(一键脚本逐关把关) | `run_pipeline.py` |
-| 10 发布(可选) | **需逐条明确授权**:浏览器自动化把拟答稿填进编辑器并发布,**每天只发前 15 条**,命中平台配额即整批停止 | `publish_batch.py` |
+| 6 发布预闸门 | 检索前先粗筛:明显非时政的题**不进延伸检索**(实测省 75–80% 检索费);判"是"的从宽放行,留给步骤 8 复核兜底 | `gen_prompts.py --gate --stage0` |
+| 7 话题延伸 | **仅过预闸的话题**各由一个子任务独立检索:每轮发送一条查询,依据上一轮结果决定下一条,同类触顶或 3 轮硬停 | Agent(子任务并行) |
+| 8 汇总与闸门 | 延伸结果合并 + 事实性复核(信源门槛 + 多源印证 + 链接探活)后,**精确复核双关:①是否时政 ②有无回答区没有的增量**——过闸才进写稿,预闸从宽判"是"的在这里被证据打回 | `merge_extension.py`、`verify_ext.py`、`gen_prompts.py --gate` |
+| 9 书写自学 | ① 从高赞回答里提炼"书写逻辑"(只提怎么写)→ ② 主 Agent 按奥卡姆剃刀汇编成 `书写skill.md` → ③ 据此成文 | Agent(子任务并行) |
+| 10 校验与产出 | 数据完整性校验 → 填表 → 生成网页 → 网页结构校验(一键脚本逐关把关) | `run_pipeline.py` |
+| 11 发布 | **人工发布**:过闸稿生成待发帖列(每日上限 3 条,可以少不可以多,附推荐/备选与入列依据);主 Agent 犀利度复核(`--sharp`)后,人在知乎页面粘贴发布,回填 `--mark "<rank>=<回答链接>"`(归属校验,贴错行拒绝) | `publish_queue.py` |
 
 ## 快速开始
 
@@ -61,20 +62,28 @@ python scripts/run.py            --root "$ROOT" --date "$D" --limit 20 --variant
 python scripts/question_fetch.py --root "$ROOT" --date "$D" --top 5 --pages 3
 python scripts/fulltext.py       --root "$ROOT" --date "$D"
 
-# 生成子任务提示词(交给 Agent 并行执行)
-python scripts/gen_prompts.py --root "$ROOT" --date "$D" --ranks 1-20 --all --per 5
-#   --ranks   → 话题延伸        子任务写 ext_search/<D>/rank_<n>/rank_<n>.json
-#   --emotion → 情绪标注        子任务写 ext_search/<D>/emotion/emotion_batch_*.json
-#   --style   → 书写逻辑提取    子任务写 ext_search/<D>/style/style_batch_*.json
-#   --write   → 按书写规范成文  子任务写 ext_search/<D>/rank_<n>/draft_<n>.md
-# 第 4 步(四维分析)与第 8 步的②(汇编书写规范)由主 Agent 完成
+# 生成子任务提示词(交给 Agent 并行执行;各阶段分别生成)
+python scripts/gen_prompts.py --root "$ROOT" --date "$D" --combo          # 情绪+书写标注   → ext_search/<D>/{emotion,style}/
+python scripts/gen_prompts.py --root "$ROOT" --date "$D" --gate --stage0  # 发布预闸门(检索前) → raw/<D>/publish_verdicts_pre.json
+python scripts/gen_prompts.py --root "$ROOT" --date "$D"                  # 话题延伸(仅过预闸) → ext_search/<D>/rank_<n>/
+python scripts/gen_prompts.py --root "$ROOT" --date "$D" --gate           # 发布闸门(时政+增量) → raw/<D>/publish_verdicts.json
+python scripts/gen_prompts.py --root "$ROOT" --date "$D" --write          # 按书写规范成文  → ext_search/<D>/rank_<n>/draft_<n>.md
+# 第 5 步(四维分析)与第 9 步的①(汇编书写规范)由主 Agent 完成
 
 python scripts/merge_emotion.py --root "$ROOT" --date "$D" --compare   # 先看分歧
 python scripts/merge_emotion.py --root "$ROOT" --date "$D" --write
 python scripts/merge_style.py   --root "$ROOT" --date "$D" --write     # 候选池 → 供奥卡姆取舍
+python scripts/merge_extension.py --root "$ROOT" --date "$D"           # 延伸合并 + 事实性复核
+
+# 发布治理:过闸稿 → 待发帖列(人工粘贴发布后回填链接)
+python scripts/publish_queue.py --root "$ROOT" --date "$D" --sharp "<rank>=<是否中庸>:<复核依据>"
+python scripts/publish_queue.py --root "$ROOT" --date "$D" --mark "<rank>=<回答链接>"
 
 # 交付链:一条命令跑完并逐关校验
 python scripts/run_pipeline.py --root "$ROOT" --date "$D" --merge --emotion
+
+# 回归:临时根重跑当日流程,与既有产物逐字节比对(改脚本后跑)
+python scripts/regress_pipeline.py --root "$ROOT" --date "$D"
 ```
 
 各脚本都支持 `--help`。约束、判据与代价最高的坑见 [`skills/zhihu-hot-track/SKILL.md`](skills/zhihu-hot-track/SKILL.md)。
@@ -86,15 +95,17 @@ skills/zhihu-hot-track/
 ├── SKILL.md              # 流程规范:步骤、约束、判据、脚本清单、经验记录
 ├── ARCHITECTURE.md       # 组成与泛用性分层:29 件组件各属哪层、怎么复用
 ├── writing_method.md     # 书写方法(通用件):三段分工、剃刀四条、数据假象清单
+├── references/           # scripts.md(脚本说明) / pitfalls.md(踩坑清单,全部实测)
 └── scripts/
     ├── contract.py          # 数据契约:文件名 / 字段 / 值域 / 结构标记的单一定义处(其余脚本共用)
     ├── zhihu_env.py         # 环境解析:定位知乎 CLI、探测凭证状态(其余脚本共用)
     ├── doctor.py            # 环境与数据体检;--discover 自动发现工作根目录
     ├── check_docs.py        # 组成清单守卫:磁盘组件 ↔ 分层清单 ↔ 脚本表 三方比对(只读)
     ├── run.py               # 取热榜 + 关键词搜索召回
-    ├── question_fetch.py    # 按问题取高赞回答(与搜索候选取并集;写入覆盖率)
+    ├── question_fetch.py    # 按问题取高赞回答(与搜索候选取并集;写入覆盖率;cookie 预检)
     ├── question_add.py      # 单问题追加追踪:把单独搜的问题并入当日交付物
     ├── fulltext.py          # 补全被截断的回答正文
+    ├── extract_cookie.py    # 从 playwright storageState 提取单行 Cookie(cookie 失效自愈)
     ├── search_many.py       # 延伸检索:按查询文件逐条执行并落盘
     ├── merge_extension.py   # 合并延伸结果(链式校验 + source 对账)+ 触发事实性复核
     ├── verify_ext.py        # 信源门槛 / 多源印证 / 链接探活(通常由 merge 自动调用)
@@ -105,16 +116,17 @@ skills/zhihu-hot-track/
     ├── gen_html.py          # 生成分页网页
     ├── verify_html.py       # 网页结构校验(约束四的 13 条断言)
     ├── run_pipeline.py      # 交付链编排:check → Excel → HTML → 校验,失败即停
-    ├── gen_prompts.py       # 生成各类子任务提示词(平台参数在此注入)
+    ├── regress_pipeline.py  # 回归:临时根重跑当日流程,新 sheet 逐字节比对
+    ├── gen_prompts.py       # 生成各类子任务提示词(平台参数在此注入;--combo/--gate/--write)
     ├── merge_emotion.py     # 情绪片段合并 + 与既有判定逐条对账(只暴露分歧)
     ├── merge_style.py       # 书写逻辑候选池:近义折叠 + 维度归类 + 跨批频次
-    ├── publish_batch.py     # 发布(可选):台账驱动、逐条验证、每日上限、配额即停
-    ├── publish_draft.py     # 单条填稿 / 发布(可选);幂等,字数校验不过拒绝发布
-    ├── make_manual_publish.py  # 人工发布兜底:把"应发未发"的稿整理成可复制 md
+    ├── publish_queue.py     # 发布治理:两阶段闸门 → 待发帖列(每日上限 3);--sharp 复核、--mark 回填
     ├── unfollow_question.py # 可选后续:发布后取消问题关注(幂等)
     ├── prompt_swarm.md      # 话题延伸子任务模板
     ├── prompt_emotion.md    # 情绪标注子任务模板(词表 / 判据 / 边界裁决 / 标定样例)
     ├── prompt_style.md      # 书写逻辑提取子任务模板(铁律 + 改写测试)
+    ├── prompt_gate.md       # 发布闸门子任务模板(时政 + 增量双关,检索后精确复核)
+    ├── prompt_gate_pre.md   # 发布预闸门子任务模板(检索前粗筛,从宽判是)
     └── prompt_write.md      # 成文子任务模板(不检索,只读规范 + 素材)
 ```
 
@@ -128,13 +140,13 @@ skills/zhihu-hot-track/
 - **文档也有守卫**:`check_docs.py` 只读比对"磁盘组件 ↔ 分层清单 ↔ 脚本表",并扫出"主流程改了、别处旧表述没改"的矛盾。改流程或增删脚本后跑一次。
 - **凭证处理**:网页登录 Cookie 保存在工作目录内(`raw/<D>/cookies.txt`),供后续运行复用;当接口返回 403 或出现大量截断时再刷新。需要清理时删除对应文件即可。
 - **数据不进仓库**:`raw/`、`ext_search/`、`*.xlsx`、`话题库/`、`书写skill/` 属于运行产物,已在 `.gitignore` 中排除;仓库只包含脚本与文档。
-- **对外动作默认关闭**:发布与取消关注都**不接默认流程**,需用户逐条明确授权;平台配额(日/周上限)写进契约常量 `PUBLISH_TOP_N`,每天只发前 15 条,命中配额立即整批停止。
+- **对外动作默认关闭**:自动发帖三件套已删(2026-09-21 起,实测存在封号风险,见页首警告);发布 = 人在知乎页面**手动粘贴**待发帖列里的稿子,再用 `publish_queue.py --mark` 回填链接。每日上限写进契约常量 `PUBLISH_MAX_PER_DAY`(=3,可以少不可以多),超限稿自动归入备选位。
 
 ## 依赖
 
 - **Python 3.8+**(写入 Excel 需要 `openpyxl`)
 - **知乎 CLI**:通过 `zhihu` skill 安装并配置 Access Secret。脚本按 `ZHIHU_CLI` → `ZHIHU_CLI_HOME` → 平台默认目录的顺序定位可执行文件,必要时向 `zhihu` skill 查询实际路径
-- **playwright-cli**(npm 包 `@playwright/cli`,可选):用于自动提取网页登录 Cookie 与(经授权后)发布;不可用时按规范手动复制 Cookie
+- **playwright-cli**(npm 包 `@playwright/cli`,可选):用于自动提取网页登录 Cookie(方式 A 零誊写);不可用时按规范 F12 手动复制 Cookie
 - **AI Agent**:负责四维分析、话题延伸、情绪标注、书写规范汇编与成文
 
 ## 许可

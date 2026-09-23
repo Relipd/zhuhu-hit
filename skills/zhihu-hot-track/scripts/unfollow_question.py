@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """取消当前知乎问题页的关注 —— **可选后续功能**(2026-09-13 用户要求)。
 
-背景: 浏览器自动化**发布回答后, 知乎会自动关注该问题**(实测两条都变成「已关注」)。
+背景: **人工粘贴发布**回答后, 知乎会自动关注该问题(实测两条都变成「已关注」)。
 这是平台行为, 不是误点。本脚本把"发布后清尾"做成可复用的一步:
 
   # 1) 生成取消关注的 run-code 脚本(与会话无关, 只作用于"当前页面")
@@ -12,7 +12,8 @@
   node playwright-cli.js run-code --filename=<unfollow.js>
 
 幂等: 已经是「关注问题」状态时直接返回 skipped, 不会反向关注。
-⚠️ 与 `publish_draft.py` 同属"操作真实账号"的自动化; 未经用户要求不要执行。
+⚠️ 这仍属"操作真实账号"的自动化(2026-09-16 起自动发帖已删除, 本脚本是仅存的浏览器自动化之一,
+ Cookie 获取是另一处); 未经用户要求不要执行。
 """
 import argparse
 import io
@@ -38,7 +39,7 @@ JS = r"""async page => {
   }
   await btn.scrollIntoViewIfNeeded();
   await page.waitForTimeout(400);
-  // 吸顶 header 可能拦截指针事件 ⇒ dispatchEvent 兜底(与 publish_draft.py 同一坑)
+  // 吸顶 header 可能拦截指针事件 ⇒ dispatchEvent 兜底(历史发布自动化踩过的同一坑)
   try { await btn.click({ timeout: 8000 }); }
   catch (e) { await btn.dispatchEvent('click'); }
   await page.waitForTimeout(2600);

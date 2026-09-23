@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""知乎热榜跟进 - 发散证据的事实性复核(信源门槛兜底 + 多源印证 + 链接探活)。
+"""热榜跟进 - 发散证据的事实性复核(信源门槛兜底 + 多源印证 + 链接探活)。
 
 为什么需要它
 ------------
-本流程信源集中在知乎, 交付的其实是**「知乎平台公众言论」的事实性提炼**, 不是已核实的事实。
+本流程信源集中在单一平台, 交付的其实是**「该平台公众言论」的事实性提炼**, 不是已核实的事实。
 用户 2026-09-12 明令: 匿名口述(如「有从业者对比称, 2000粉博主月入3000-4000元」)
 不值得采信, 获取帖子时要有**信源门槛**。
 
@@ -43,6 +43,7 @@ import urllib.request
 from urllib.parse import urlparse
 
 import contract
+import platform_profile as pf   # L2 平台档案:探活请求头(Referer)的取值处
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -248,7 +249,7 @@ def probe(url, cookie, attempts=None, backoff=None):
     last = "unknown"
     for i in range(max(1, attempts)):
         req = urllib.request.Request(url, headers={
-            "User-Agent": UA, "Referer": "https://www.zhihu.com/",
+            "User-Agent": UA, "Referer": (pf.get("referer") or ""),
             **({"Cookie": cookie} if cookie else {})})
         try:
             with urllib.request.urlopen(req, timeout=contract.EXT_LINK_TIMEOUT) as r:

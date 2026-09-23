@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
-"""知乎热榜跟进 - 分页式 HTML 生成(索引页 + 每问题一页 + 翻页导航)。
+"""热榜跟进 - 分页式 HTML 生成(索引页 + 每问题一页 + 翻页导航)。
 
 结构:
-  <root>/知乎热榜跟进-<date>.html          根入口(自动跳转)
-  <root>/知乎热榜跟进-<date>/index.html   索引页: 4×5自适应网格卡片, 点击进入详情
-  <root>/知乎热榜跟进-<date>/q01..q20.html 详情页: 每问题一页, 回答折叠扩展, 上一题/下一题翻页
+  <root>/<报告前缀>-<date>.html          根入口(自动跳转)
+  <root>/<报告前缀>-<date>/index.html   索引页: 4×5自适应网格卡片, 点击进入详情
+  <root>/<报告前缀>-<date>/q01..q20.html 详情页: 每问题一页, 回答折叠扩展, 上一题/下一题翻页
 
 用法: python gen_html.py --root <工作根目录> --date 2026-08-08 [--out <输出根文件>]
 """
 import argparse, html, io, json, os, re
 
 import contract   # 数据契约:文件名 / 字段 / 值域的单一定义处(见 contract.py)
+import platform_profile as pf   # L2 平台档案:交付物文案(平台名/来源说明)的取值处
 
 JUDGE_CLS = contract.EMOTION_CSS_CLASS   # 情绪 -> 配色 class(与 verify_html 共用同一值域)
 CSS = """
@@ -98,11 +99,28 @@ main.detail { max-width: 900px; margin: 22px auto; padding: 0 24px; }
   border-radius: 4px; padding: 1px 6px; background: #fbfaf6; }
 .legend { font-size: 12px; color: var(--muted); line-height: 1.9; }
 .legend .emo, .legend .emo-tgt { margin-right: 3px; }
-/* 拟答参考稿块: 与热点拓展的金色区分开, 用墨蓝纸感, 提示"这是给人改的稿子" */
+/* 发帖短评块: 与热点拓展的金色区分开, 用墨蓝纸感, 提示"这是给人改的短评" */
 .draft { background: #f2f5f8; border-top: 2px solid #9fb3c8; padding: 14px 24px 18px; font-size: 13.5px; }
 .draft .ext-head { color: #2c4a68; }
 .draft .draft-title { font-weight: 700; font-size: 15px; color: #16283f; margin: 2px 0 9px; }
 .draft p { margin: 0 0 9px; line-height: 1.85; color: #2f3a44; }
+
+/* ---------- 索引页·今日短评挑选面板 ---------- */
+.dpanel { background: #f2f5f8; border: 1px solid #9fb3c8; border-radius: 10px;
+          padding: 12px 18px 8px; margin: 0 0 20px; }
+.dpanel h2 { margin: 0 0 6px; font-size: 14.5px; color: #16283f; }
+.dpanel .drow { display: flex; gap: 10px; align-items: baseline; padding: 7px 0;
+                border-top: 1px dashed #c3d0dd; font-size: 13px; flex-wrap: wrap; }
+.dpanel .drow:first-of-type { border-top: none; }
+.dpanel .dbadge { flex: 0 0 auto; font-size: 12px; font-weight: 700; color: #fff;
+                  background: #2c4a68; border-radius: 4px; padding: 2px 8px; }
+.dpanel .dbadge.alt { background: #8a6d3b; }
+.dpanel .drank { flex: 0 0 auto; color: #5b6b7c; font-weight: 700; }
+.dpanel a.dlink { color: #16283f; font-weight: 600; text-decoration: none; }
+.dpanel a.dlink:hover { text-decoration: underline; }
+.dpanel .dsnip { color: #5b6b7c; flex: 1 1 220px; min-width: 0;
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dpanel .dlen { flex: 0 0 auto; color: #8a97a5; font-size: 12px; }
 .a-stance { color: var(--muted); font-size: 13px; flex: 1; min-width: 200px; }
 .a-body { padding: 2px 24px 16px; }
 table.analysis { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0 10px; }
@@ -256,7 +274,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=os.getcwd())
     ap.add_argument("--date", required=True, help="YYYY-MM-DD")
-    ap.add_argument("--out", default=None, help="输出根文件(默认 <root>/知乎热榜跟进-<date>.html)")
+    ap.add_argument("--out", default=None, help="输出根文件(默认 <root>/<报告前缀>-<date>.html)")
     args = ap.parse_args()
 
     summary = json.load(open(contract.path_answers(args.root, args.date), encoding="utf-8"))
@@ -265,13 +283,66 @@ def main():
     ext = json.load(open(ext_path, encoding="utf-8")) if os.path.exists(ext_path) else {}
 
     out = args.out or contract.report_entry(args.root, args.date)
-    pages_dir = out.rsplit(".", 1)[0]  # <root>/知乎热榜跟进-<date>/  目录
+    pages_dir = out.rsplit(".", 1)[0]  # <root>/<报告前缀>-<date>/  目录
     os.makedirs(pages_dir, exist_ok=True)
     idx_path = os.path.join(pages_dir, contract.HTML_INDEX_NAME)
 
     tag_c = tag_stats(summary, an)
     total = sum(len(s["answers"]) for s in summary)
     n = len(summary)
+
+    def draft_panel_html():
+        """索引页「今日短评」挑选面板(2026-09-21 起): 推荐/备选按 priority 一屏排列。
+
+        数据源与详情页短评块一致(publish_queue.json 的 ready/over_daily_cap + draft 文件);
+        队列缺失或无稿时整块不出现(历史日期不受影响)。"""
+        qp = contract.path_queue(args.root, args.date)
+        if not os.path.exists(qp):
+            return ""
+        try:
+            qitems = json.load(io.open(qp, encoding="utf-8-sig")).get("items", {})
+        except Exception:
+            return ""
+        rows = []
+        for q in qitems.values():
+            if q.get("state") not in ("ready", "over_daily_cap"):
+                continue
+            rk = q.get("rank")
+            dp = contract.path_draft(args.root, args.date, rk) if isinstance(rk, int) else ""
+            if not dp or not os.path.exists(dp):
+                continue
+            try:
+                raw = io.open(dp, encoding="utf-8-sig").read().strip()
+            except Exception:
+                continue
+            lines0 = raw.splitlines()
+            t0 = lines0[0].lstrip("# ").strip() if lines0 and lines0[0].lstrip().startswith("#") else ""
+            body0 = "\n".join(lines0[1:] if t0 else lines0).strip()
+            if not body0:
+                continue
+            rows.append((q.get("priority") or 999, 0 if q.get("state") == "ready" else 1,
+                         rk, t0, body0, q.get("len")))
+        if not rows:
+            return ""
+        rows.sort(key=lambda t: (t[0], t[1]))
+        out = ['<section class="dpanel"><h2>✍️ 今日短评 · 挑稿面板'
+               '（推荐位=每日上限内；备选=超预算，人工终审可换发）</h2>']
+        for prio, _ord, rk, t0, body0, ln in rows:
+            badge = "推荐 #%d" % prio
+            cls = ""
+            if _ord:
+                badge = "备选 #%d" % prio
+                cls = " alt"
+            snip = re.sub(r"\s+", "", body0)[:42]
+            n_len = ln if ln else len(re.sub(r"\s", "", body0))
+            out.append(
+                f'<div class="drow"><span class="dbadge{cls}">{badge}</span>'
+                f'<span class="drank">#{rk}</span>'
+                f'<a class="dlink" href="{contract.page_name(rk)}#draft">{html.escape(t0 or "(无标题)")}</a>'
+                f'<span class="dsnip">{html.escape(snip)}…</span>'
+                f'<span class="dlen">{n_len} 字</span></div>')
+        out.append("</section>")
+        return "".join(out)
 
     # ============ 索引页 ============
     cards = []
@@ -305,12 +376,12 @@ def main():
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{contract.REPORT_TITLE} {args.date} · 索引</title><style>{CSS}</style></head><body>
 <header><h1>{contract.REPORT_TITLE} · {args.date}</h1>
-<p>数据来源：知乎开放平台热榜 · 每问题数据 =「问题维度网页接口(按赞取前 N)」∪「关键词搜索召回」并集 · 点击卡片进入详情页 · 全部条目含热点拓展</p>
+<p>{pf.get('source_bar')}</p>
 <div class="stats"><span><b>{n}</b>问题</span><span><b>{total}</b>回答</span>
 {emo_stats}
 <span class="ebar">{emo_bar}</span></div>
 {emo_legend_html()}
-</header><main class="idx">{"".join(cards)}
+</header><main class="idx">{draft_panel_html()}{"".join(cards)}
 </main><footer>生成于 {args.date} · 原始数据与脚本见 {contract.RAW_DIRNAME}/{args.date} · 四维分析基于回答原文归纳 · 情绪为「多标签＋强度＋指向」, 由 Agent 阅读原文判定</footer></body></html>"""
     open(idx_path, "w", encoding="utf-8").write(idx_html)
 
@@ -342,10 +413,11 @@ def main():
         return "".join(parts)
 
     def draft_html(rank):
-        """拟答参考稿(ext_search/<D>/rank_<n>/draft_<n>.md, 由拓展 subagent 产出)。
+        """发帖短评(ext_search/<D>/rank_<n>/draft_<n>.md, 50–100 字犀利短评)。
 
         稿子是给人改语言用的: 原样展示、不做 markdown 渲染(只处理首行 # 标题与段落切分),
-        避免转义/加粗把内容改样。文件不存在就整块不出现(历史日期都没有稿子)。
+        避免转义/加粗把内容改样。文件不存在就整块不出现(历史日期都有旧长稿, 照常展示)。
+        待发帖状态徽标取自 publish_queue.json(缺队列文件就不显示)。
         """
         p = contract.path_draft(args.root, args.date, rank)
         if not os.path.exists(p):
@@ -363,10 +435,25 @@ def main():
             lines = lines[1:]
         paras = [x.strip() for x in "\n".join(lines).split("\n\n") if x.strip()]
         body = "".join("<p>%s</p>" % html.escape(x).replace("\n", "<br>") for x in paras)
-        head = (f'<div class="ext-head">✍️ {contract.DRAFT_SHEET}（按扩展思路拟，'
-                f'{len(re.sub(chr(92) + "s", "", raw))} 字）</div>')
+        st = ""
+        qp = contract.path_queue(args.root, args.date)
+        if os.path.exists(qp):
+            try:
+                q = json.load(io.open(qp, encoding="utf-8-sig")).get("items", {}).get(str(rank), {})
+                lbl = {"ready": "推荐", "published": "已发布", "mediocre": "打回·中庸",
+                       "len_out_of_range": "打回·字数", "draft_pending": "过闸待写",
+                       "over_daily_cap": "备选·超今日建议", "sharpness_unjudged": "待复核"}.get(q.get("state"))
+                if lbl:
+                    prio = q.get("priority")
+                    st = " · " + (("%s #%d" % (lbl, prio))
+                                  if (prio and q.get("state") in ("ready", "over_daily_cap")) else lbl)
+            except Exception:
+                st = ""
+        n = len(re.sub(r"\s", "", "\n".join(lines)))   # 与队列口径一致: 只数正文(标题行不算, 2026-09-21 修)
+        head = ('<div class="ext-head">✍️ %s（%d 字 · 50–100 字犀利向%s）</div>'
+                % (contract.DRAFT_SHEET, n, st))
         t = f'<div class="draft-title">{html.escape(title)}</div>' if title else ""
-        return f'<div class="draft">{head}{t}{body}</div>'
+        return f'<div class="draft" id="draft">{head}{t}{body}</div>'
 
     def ext_html(rank):
         e = ext.get(str(rank))
